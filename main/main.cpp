@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Matter.h>
 #include <esp_sleep.h>
+#include "MatterSoilSensor.h"
 
 // Build-flag defaults (override via -D in platformio.ini)
 #ifndef SOIL_MOISTURE_PIN
@@ -11,8 +12,8 @@
 #define ICD_WAKE_INTERVAL_S 3600  // 1 hour default, also set in sdkconfig as CONFIG_ICD_IDLE_MODE_INTERVAL_SEC
 #endif
 
-// Matter Humidity Sensor endpoint (used for soil moisture)
-MatterHumiditySensor soilMoisture;
+// Matter Soil Sensor endpoint (Matter 1.5 cluster 0x040B)
+MatterSoilSensor soilMoisture;
 
 // Boot button for decommissioning
 const uint8_t buttonPin = BOOT_PIN;
@@ -74,7 +75,7 @@ void setup() {
     Serial.printf("Initial soil moisture: %.2f%%\n", initialMoisture);
 
     // Start Matter (must be called after all endpoints are initialized)
-    Matter.begin();
+    MatterSoilSensor::startMatter();
 
     // Handle commissioning on first boot
     if (!Matter.isDeviceCommissioned()) {
@@ -111,7 +112,7 @@ void setup() {
 void loop() {
     // Read and report soil moisture
     double moisture = readSoilMoisture();
-    soilMoisture.setHumidity(moisture);
+    soilMoisture.setMoisture(moisture);
     Serial.printf("Soil moisture: %.2f%%\n", moisture);
 
     // Check decommission button
