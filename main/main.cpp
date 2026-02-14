@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <Matter.h>
 #include <esp_sleep.h>
-#include <esp_matter_icd_configuration.h>
 
 // Build-flag defaults (override via -D in platformio.ini)
 #ifndef SOIL_MOISTURE_PIN
@@ -9,7 +8,7 @@
 #endif
 
 #ifndef ICD_WAKE_INTERVAL_S
-#define ICD_WAKE_INTERVAL_S 3600  // 1 hour
+#define ICD_WAKE_INTERVAL_S 3600  // 1 hour default, also set in sdkconfig as CONFIG_ICD_IDLE_MODE_INTERVAL_SEC
 #endif
 
 // Matter Humidity Sensor endpoint (used for soil moisture)
@@ -62,14 +61,12 @@ void setup() {
     // Configure ADC
     analogSetAttenuation(ADC_11db);
 
-    // Configure ICD parameters before Matter.begin()
-    esp_matter::icd::config_t icd_config = {};
-    icd_config.idle_mode_duration_s = ICD_WAKE_INTERVAL_S;
-    icd_config.active_mode_duration_ms = 10000;   // 10s active after wakeup
-    icd_config.active_threshold_ms = 5000;         // 5s activity threshold
-    icd_config.slow_interval_ms = 30000;           // 30s slow poll interval
-    icd_config.fast_interval_ms = 200;             // 200ms fast poll interval
-    esp_matter::icd::set_configuration_data(&icd_config);
+    // ICD parameters are configured at compile time via sdkconfig.defaults:
+    //   CONFIG_ICD_IDLE_MODE_INTERVAL_SEC=3600  (1 hour)
+    //   CONFIG_ICD_ACTIVE_MODE_INTERVAL_MS=10000
+    //   CONFIG_ICD_ACTIVE_MODE_THRESHOLD_MS=5000
+    //   CONFIG_ICD_SLOW_POLL_INTERVAL_MS=30000
+    //   CONFIG_ICD_FAST_POLL_INTERVAL_MS=200
 
     // Initialize soil moisture sensor endpoint with initial reading
     double initialMoisture = readSoilMoisture();
