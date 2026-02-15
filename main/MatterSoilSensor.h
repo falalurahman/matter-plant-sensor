@@ -52,9 +52,6 @@ public:
     return (double)getMoisture();
   }
 
-  // Start the Matter stack (replaces Matter.begin() for custom endpoints)
-  static bool startMatter();
-
 private:
   bool started = false;
   uint16_t rawMoisture = 0;
