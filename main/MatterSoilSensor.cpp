@@ -2,15 +2,13 @@
 #ifdef CONFIG_ESP_MATTER_ENABLE_DATA_MODEL
 
 #include "MatterSoilSensor.h"
-#if CONFIG_ENABLE_MATTER_OVER_THREAD
-#include "esp_openthread_types.h"
-#include "platform/ESP32/OpenthreadLauncher.h"
-#endif
+#include "MatterInit.h"
 
 using namespace esp_matter;
 using namespace esp_matter::cluster;
 
-static esp_matter::node_t *s_matter_node = nullptr;
+// Forward declare the deviceNode from MatterInit
+extern esp_matter::node_t *deviceNode;
 
 MatterSoilSensor::MatterSoilSensor() {}
 
@@ -29,18 +27,17 @@ bool MatterSoilSensor::begin(uint16_t _rawMoisture) {
     return false;
   }
 
-  // Create the Matter node if it doesn't exist yet
-  if (s_matter_node == nullptr) {
-    node::config_t node_config;
-    s_matter_node = node::create(&node_config, NULL, NULL);
-    if (s_matter_node == nullptr) {
-      log_e("Failed to create Matter node");
+  // Initialize Matter node if it hasn't been initialized yet
+  if (deviceNode == nullptr) {
+    ArduinoMatterInit::_init();
+    if (deviceNode == nullptr) {
+      log_e("Failed to initialize Matter node");
       return false;
     }
   }
 
   // Create a generic endpoint
-  endpoint_t *ep = endpoint::create(s_matter_node, ENDPOINT_FLAG_NONE, NULL);
+  endpoint_t *ep = endpoint::create(deviceNode, ENDPOINT_FLAG_NONE, NULL);
   if (ep == nullptr) {
     log_e("Failed to create Soil Sensor endpoint");
     return false;
@@ -122,27 +119,6 @@ bool MatterSoilSensor::setRawMoisture(uint16_t _rawMoisture) {
   rawMoisture = _rawMoisture;
   log_v("Soil Sensor set to %.02f Percent", (float)_rawMoisture / 100.00);
 
-  return true;
-}
-
-bool MatterSoilSensor::startMatter() {
-#if CONFIG_ENABLE_MATTER_OVER_THREAD
-  // Set OpenThread platform config (same as Matter.begin())
-  esp_openthread_platform_config_t ot_config;
-  memset(&ot_config, 0, sizeof(esp_openthread_platform_config_t));
-  ot_config.radio_config.radio_mode = RADIO_MODE_NATIVE;
-  ot_config.host_config.host_connection_mode = HOST_CONNECTION_MODE_NONE;
-  ot_config.port_config.storage_partition_name = "nvs";
-  ot_config.port_config.netif_queue_size = 10;
-  ot_config.port_config.task_queue_size = 10;
-  set_openthread_platform_config(&ot_config);
-#endif
-
-  esp_err_t err = esp_matter::start(NULL);
-  if (err != ESP_OK) {
-    log_e("Failed to start Matter: %d", err);
-    return false;
-  }
   return true;
 }
 

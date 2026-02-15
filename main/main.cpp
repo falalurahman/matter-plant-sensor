@@ -1,6 +1,6 @@
 #include <Arduino.h>
-#include <Matter.h>
 #include <esp_sleep.h>
+#include "MatterInit.h"
 #include "MatterSoilSensor.h"
 
 // Build-flag defaults (override via -D in platformio.ini)
@@ -75,16 +75,16 @@ void setup() {
     Serial.printf("Initial soil moisture: %.2f%%\n", initialMoisture);
 
     // Start Matter (must be called after all endpoints are initialized)
-    MatterSoilSensor::startMatter();
+    MatterInit.begin();
 
     // Handle commissioning on first boot
-    if (!Matter.isDeviceCommissioned()) {
+    if (!MatterInit.isDeviceCommissioned()) {
         Serial.println("Device not commissioned. Waiting for commissioning...");
-        Serial.printf("Manual pairing code: %s\n", Matter.getManualPairingCode().c_str());
-        Serial.printf("QR code URL: %s\n", Matter.getOnboardingQRCodeUrl().c_str());
+        Serial.printf("Manual pairing code: %s\n", MatterInit.getManualPairingCode().c_str());
+        Serial.printf("QR code URL: %s\n", MatterInit.getOnboardingQRCodeUrl().c_str());
 
         // Wait for commissioning (check button for decommission during wait)
-        while (!Matter.isDeviceCommissioned()) {
+        while (!MatterInit.isDeviceCommissioned()) {
             delay(100);
 
             // Check decommission button during commissioning wait
@@ -100,9 +100,9 @@ void setup() {
     }
 
     // Wait for network connection
-    if (!Matter.isDeviceConnected()) {
+    if (!MatterInit.isDeviceConnected()) {
         Serial.println("Waiting for Thread network connection...");
-        while (!Matter.isDeviceConnected()) {
+        while (!MatterInit.isDeviceConnected()) {
             delay(100);
         }
         Serial.println("Connected to Thread network.");
@@ -125,7 +125,7 @@ void loop() {
     }
     if (button_state && (millis() - button_time_stamp) > decommissioningTimeout) {
         Serial.println("Decommissioning device...");
-        Matter.decommission();
+        MatterInit.decommission();
         Serial.println("Decommissioned. Restarting...");
         delay(500);
         esp_restart();
