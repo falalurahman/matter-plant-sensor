@@ -14,6 +14,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <esp_sleep.h>
+#include <driver/gpio.h>
 #include <math.h>
 
 #include "MatterCustom.h"
@@ -421,10 +422,17 @@ void loop() {
 
         esp_sleep_enable_timer_wakeup(
             static_cast<uint64_t>(ICD_WAKE_INTERVAL_S) * 1000000ULL);
+        gpio_wakeup_enable((gpio_num_t)BOOT_BUTTON_PIN, GPIO_INTR_LOW_LEVEL);
+        esp_sleep_enable_gpio_wakeup();
         esp_light_sleep_start();
 
-        // Execution resumes here after wakeup.
-        Serial.println("Woke from light sleep.");
+        // Execution resumes here after wakeup (light sleep preserves stack/state).
+        auto wakeReason = esp_sleep_get_wakeup_cause();
+        if (wakeReason == ESP_SLEEP_WAKEUP_GPIO) {
+            Serial.println("Woke from button press.");
+        } else {
+            Serial.println("Woke from timer.");
+        }
         gIdleStart = millis();
         gState     = State::IDLE_WAIT;
         break;
