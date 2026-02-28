@@ -41,9 +41,9 @@ static constexpr uint8_t  PIN_I2C_SCL      = 5;
 static constexpr uint8_t  I2C_ADDR_SHT4X   = 0x44;
 static constexpr uint8_t  I2C_ADDR_BH1750  = 0x23;
 
-// Decommission button (BOOT pin)
-static constexpr uint8_t  BOOT_BUTTON_PIN  = BOOT_PIN;
-static constexpr uint32_t DECOMMISSION_MS  = 5000;
+// Action button (BOOT pin) — short press: force sensor read; long press: decommission
+static constexpr uint8_t  ACTION_BUTTON_PIN    = BOOT_PIN;
+static constexpr uint32_t ACTION_LONG_PRESS_MS = 5000;
 
 // Battery voltage limits (mV) for a single-cell LiPo, 1:1 divider on ADC.
 // ADC attenuation 11 dB → full-scale ~3100 mV.  Divider halves Vbat.
@@ -73,6 +73,7 @@ enum class State : uint8_t {
     MATTER_READY,
     MATTER_DECOMMISSIONED,   // wait for BLE commission + Thread join
     COMMISSIONING_GRACE,     // idle hold so controller can finish setup
+    ACTION_BUTTON_PRESSED,   // button held: short press → force read, long press → decommission
     IDLE_WAIT,
     SENSOR_READ,
     DATA_PUSH,
@@ -86,10 +87,6 @@ static double  gHumidityPct  = 0.0;
 static float   gLux          = 0.0f;
 static double  gSoilPct      = 0.0;
 static uint8_t gBatteryPct   = 0;
-
-// ─── Decommission button ─────────────────────────────────────────────────────
-static bool     gButtonPressed    = false;
-static uint32_t gButtonPressedAt  = 0;
 
 // ─── Timing ──────────────────────────────────────────────────────────────────
 static uint32_t gIdleStart       = 0;
@@ -172,23 +169,6 @@ static uint8_t readBatteryPercent() {
     return static_cast<uint8_t>(constrain(pct, 0.0f, 100.0f));
 }
 
-// ── Button debounce helper ────────────────────────────────────────────────────
-static void checkDecommissionButton() {
-    bool pressed = (digitalRead(BOOT_BUTTON_PIN) == LOW);
-    if (pressed && !gButtonPressed) {
-        gButtonPressedAt = millis();
-        gButtonPressed   = true;
-    } else if (!pressed) {
-        gButtonPressed = false;
-    }
-    if (gButtonPressed && (millis() - gButtonPressedAt) >= DECOMMISSION_MS) {
-        Serial.println("Decommissioning — factory reset…");
-        MatterCustomNode::decommission();
-        delay(500);
-        esp_restart();
-    }
-}
-
 // ════════════════════════════════════════════════════════════════════════════
 // ── Arduino entry points ─────────────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════════════════
@@ -205,13 +185,17 @@ void setup() {
 }
 
 void loop() {
-    checkDecommissionButton();
+    // Detect fresh button press from any state — transition to ACTION_BUTTON_PRESSED.
+    if (gState != State::ACTION_BUTTON_PRESSED &&
+        digitalRead(ACTION_BUTTON_PIN) == LOW) {
+        gState = State::ACTION_BUTTON_PRESSED;
+    }
     switch (gState) {
 
     // ── SYSTEM_BOOT ──────────────────────────────────────────────────────────
     case State::SYSTEM_BOOT: {
-        // Button
-        pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
+        // Action button
+        pinMode(ACTION_BUTTON_PIN, INPUT_PULLUP);
 
         // ADC
         analogSetAttenuation(ADC_11db);
@@ -302,14 +286,8 @@ void loop() {
                           COMMISSIONING_GRACE_MS / 1000);
         }
 
-        // Safety fallback: if the event never fires within 10 s, skip grace.
-        if (stayAwakeUntil == 0 && (millis() - graceEnteredAt >= 10000)) {
-            Serial.println("No commissioning event within 10 s — skipping grace.");
-            stayAwakeUntil = 1;  // sentinel: grace not needed
-        }
-
         // Stay idle while the grace timer is running.
-        if (stayAwakeUntil > 1 && millis() < stayAwakeUntil) {
+        if (stayAwakeUntil > 0 && millis() < stayAwakeUntil) {
             static uint32_t lastGraceLog = 0;
             if (millis() - lastGraceLog >= 15000) {
                 lastGraceLog = millis();
@@ -330,11 +308,40 @@ void loop() {
         break;
     }
 
+    // ── ACTION_BUTTON_PRESSED ────────────────────────────────────────────────
+    // Tracks how long the action button is held.
+    // Short press (<5 s): force an immediate sensor read cycle.
+    // Long press (≥5 s): factory-reset Matter credentials → restart.
+    case State::ACTION_BUTTON_PRESSED: {
+        static uint32_t pressedAt = 0;
+        if (pressedAt == 0) pressedAt = millis();
+
+        bool held = (digitalRead(ACTION_BUTTON_PIN) == LOW);
+
+        if (!held) {
+            // Released before timeout — force sensor read.
+            pressedAt = 0;
+            Serial.println("Action button: short press — forcing sensor read.");
+            gIdleStart = millis();
+            gState = State::IDLE_WAIT;
+            break;
+        }
+
+        if (millis() - pressedAt >= ACTION_LONG_PRESS_MS) {
+            // Held long enough — decommission.
+            pressedAt = 0;
+            Serial.println("Action button: long press — decommissioning…");
+            MatterCustomNode::decommission();
+            delay(500);
+            gState = State::MATTER_DECOMMISSIONED;
+        }
+        break;
+    }
+
     // ── IDLE_WAIT ────────────────────────────────────────────────────────────
     // Short active-wait so the Matter stack can process any queued messages
     // before we enter sensor reading.  Uses millis() — non-blocking.
     case State::IDLE_WAIT: {
-        checkDecommissionButton();
 
         // On first boot give the stack 2 s to settle after commissioning/join.
         if (millis() - gIdleStart >= 2000) {
@@ -422,7 +429,7 @@ void loop() {
 
         esp_sleep_enable_timer_wakeup(
             static_cast<uint64_t>(ICD_WAKE_INTERVAL_S) * 1000000ULL);
-        gpio_wakeup_enable((gpio_num_t)BOOT_BUTTON_PIN, GPIO_INTR_LOW_LEVEL);
+        gpio_wakeup_enable((gpio_num_t)ACTION_BUTTON_PIN, GPIO_INTR_LOW_LEVEL);
         esp_sleep_enable_gpio_wakeup();
         esp_light_sleep_start();
 
@@ -430,11 +437,12 @@ void loop() {
         auto wakeReason = esp_sleep_get_wakeup_cause();
         if (wakeReason == ESP_SLEEP_WAKEUP_GPIO) {
             Serial.println("Woke from button press.");
+            gState = State::ACTION_BUTTON_PRESSED;
         } else {
             Serial.println("Woke from timer.");
+            gIdleStart = millis();
+            gState = State::IDLE_WAIT;
         }
-        gIdleStart = millis();
-        gState     = State::IDLE_WAIT;
         break;
     }
 
