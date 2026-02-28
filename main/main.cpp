@@ -181,6 +181,10 @@ void setup() {
     gWakeReason = esp_sleep_get_wakeup_cause();
     Serial.printf("Wakeup reason: %d\n", (int)gWakeReason);
 
+    // Configure the action button before the first loop() iteration so that
+    // the top-of-loop digitalRead() check never sees a floating pin.
+    pinMode(ACTION_BUTTON_PIN, INPUT_PULLUP);
+
     gState = State::SYSTEM_BOOT;
 }
 
@@ -193,10 +197,13 @@ void loop() {
     switch (gState) {
 
     // ── SYSTEM_BOOT ──────────────────────────────────────────────────────────
+    // NOTE: Deep sleep causes a full chip reset on wakeup — setup() re-runs and
+    // the Matter + OpenThread stacks are fully re-initialized from NVS every cycle.
+    // The "Failed to remove advertised services: 3" (ESP_ERR_NOT_FOUND) errors
+    // logged during Matter startup are benign: mDNS cleanup runs before any
+    // services have been registered in the new boot cycle.  NVS preserves fabrics,
+    // the Thread dataset, CASE session resumption IDs, and subscription state.
     case State::SYSTEM_BOOT: {
-        // Action button
-        pinMode(ACTION_BUTTON_PIN, INPUT_PULLUP);
-
         // ADC
         analogSetAttenuation(ADC_11db);
 
@@ -435,6 +442,15 @@ void loop() {
     // Timer wakeup fires after ICD_WAKE_INTERVAL_S for the next sensor reading.
     // EXT1 wakeup fires on ACTION_BUTTON_PIN LOW (button press).
     case State::POWER_SAVE: {
+        // If the commissioning window is open (e.g. kFabricRemoved fired while we
+        // were mid-cycle and eventCB re-opened it), do NOT sleep — a sleep here
+        // would lock out commissioning for up to ICD_WAKE_INTERVAL_S.
+        if (MatterCustomNode::isCommissioningWindowOpen()) {
+            log_i("Commissioning window open — staying awake for recommissioning");
+            gState = State::MATTER_DECOMMISSIONED;
+            break;
+        }
+
         Serial.printf("Entering deep sleep for %d s…\n", ICD_WAKE_INTERVAL_S);
         Serial.flush();
         delay(100);  // drain UART TX buffer before power-down

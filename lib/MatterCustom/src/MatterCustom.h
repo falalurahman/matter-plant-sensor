@@ -33,8 +33,9 @@ public:
     static bool start();
 
     // ── Status queries (usable after start()) ────────────────────────────────
-    static bool isCommissioned();  // fabric table non-empty
-    static bool isConnected();     // Thread network attached
+    static bool isCommissioned();             // fabric table non-empty
+    static bool isConnected();                // Thread network attached
+    static bool isCommissioningWindowOpen();  // BLE/DNS-SD commissioning window active
 
     // Factory-reset all Matter credentials and restart commissioning.
     static void decommission();
