@@ -10,6 +10,8 @@
 #include <Arduino.h>
 #include <esp_matter.h>
 #include <MatterEndPoint.h>
+#include <app/ReadHandler.h>
+#include <atomic>
 
 #if CONFIG_ENABLE_MATTER_OVER_THREAD
 #include "esp_openthread_types.h"
@@ -46,6 +48,18 @@ public:
     // Update BatteryPercentageRemaining on EP0 (0–100 % → stored as 0–200).
     static bool setBatteryPercent(uint8_t percent);
 
+    // ── Pre-sleep report guarantee ───────────────────────────────────────────
+    // Block until attribute reports have been delivered to all subscribed
+    // controllers, or until timeoutMs elapses.
+    //
+    // Three-phase wait:
+    //   1. Thread connectivity  — up to timeoutMs
+    //   2. Subscription active  — waits for at least one ReadHandler to establish
+    //   3. Dirty reports drain  — polls GetNumDirtySubscriptions() on CHIP thread
+    //
+    // Returns true if all dirty reports cleared before timeout.
+    static bool waitForReportsDelivered(uint32_t timeoutMs = 15000);
+
     // Internal callbacks — do not call directly.
     static esp_err_t attrUpdateCB(
         esp_matter::attribute::callback_type_t type,
@@ -64,6 +78,29 @@ private:
     static volatile bool _justCommissioned;
 
     static void eventCB(const ChipDeviceEvent *event, intptr_t arg);
+
+    // ── Subscription lifecycle tracker ───────────────────────────────────────
+    // Implements ReadHandler::ApplicationCallback to count active subscriptions.
+    // Registered with InteractionModelEngine after esp_matter::start().
+    class SubscriptionTracker : public chip::app::ReadHandler::ApplicationCallback {
+    public:
+        CHIP_ERROR OnSubscriptionRequested(chip::app::ReadHandler &,
+                                           chip::Transport::SecureSession &) override {
+            return CHIP_NO_ERROR;
+        }
+        void OnSubscriptionEstablished(chip::app::ReadHandler &) override;
+        void OnSubscriptionTerminated(chip::app::ReadHandler &) override;
+        bool hasActiveSubscription() const { return _count.load() > 0; }
+        void reset() { _count.store(0); }
+    private:
+        std::atomic<int> _count{0};
+    };
+
+    static SubscriptionTracker  _subTracker;
+    static std::atomic<uint32_t> _sDirtyCount;
+
+    // Runs on the CHIP task thread to safely read GetNumDirtySubscriptions().
+    static void _checkDirtyWork(intptr_t);
 };
 
 #endif // CONFIG_ESP_MATTER_ENABLE_DATA_MODEL
