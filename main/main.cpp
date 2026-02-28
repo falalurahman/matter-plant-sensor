@@ -15,6 +15,10 @@
 #include <Wire.h>
 #include <esp_sleep.h>
 #include <math.h>
+#if CONFIG_ENABLE_MATTER_OVER_THREAD
+#include <esp_openthread.h>
+#include <openthread/thread.h>
+#endif
 
 #include "MatterCustom.h"
 #include "MatterTempSensor.h"
@@ -230,6 +234,20 @@ void loop() {
             while (true) delay(1000);
         }
 
+        // Set Thread child timeout to 4× wake interval so the parent router
+        // keeps the child entry alive across the full deep-sleep window.
+        // Default OpenThread timeout is 240 s; at 120 s sleep this is borderline.
+#if CONFIG_ENABLE_MATTER_OVER_THREAD
+        {
+            otInstance *ot = esp_openthread_get_instance();
+            if (ot) {
+                otThreadSetChildTimeout(ot, ICD_WAKE_INTERVAL_S * 4);
+                Serial.printf("OpenThread child timeout set to %d s\n",
+                              ICD_WAKE_INTERVAL_S * 4);
+            }
+        }
+#endif
+
         Serial.printf("Wake interval: %d s\n", ICD_WAKE_INTERVAL_S);
         gState = State::MATTER_READY;
         break;
@@ -403,6 +421,17 @@ void loop() {
         static double  lastSoil    = -1.0;
         static uint8_t lastBat     = 255;
 
+        // Step 1: Wait for Thread + subscription BEFORE touching attributes.
+        // Updating attributes before Thread connects triggers immediate failed CASE
+        // session attempts, corrupting retry state before the wait begins.
+        // 90 s covers: CIP Check-In round-trip + CASE establishment + MRP retransmits.
+        if (!MatterCustomNode::waitForSubscription(90000)) {
+            log_w("DATA_PUSH: no subscription — sleeping anyway");
+            gState = State::POWER_SAVE;
+            break;
+        }
+
+        // Step 2: Subscription is active — update attributes now.
         if (fabs(gTempC - lastTemp) >= TEMP_THRESHOLD_C) {
             gTempSensor.setTemperature(gTempC);
             lastTemp = gTempC;
@@ -425,11 +454,9 @@ void loop() {
             lastBat = gBatteryPct;
         }
 
-        // Wait for Thread connectivity, subscription re-establishment, and dirty
-        // attribute reports to drain before sleeping. The 30 s budget is shared
-        // across all three phases inside waitForReportsDelivered().
-        if (!MatterCustomNode::waitForReportsDelivered(30000)) {
-            log_w("DATA_PUSH: report delivery not confirmed — sleeping anyway");
+        // Step 3: Drain dirty reports (subscription already active — should be fast).
+        if (!MatterCustomNode::waitForDirtyDrain(5000)) {
+            log_w("DATA_PUSH: drain timeout — sleeping anyway");
         }
 
         gState = State::POWER_SAVE;

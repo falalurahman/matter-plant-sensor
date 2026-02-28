@@ -35,10 +35,14 @@ CONFIG_ENABLE_PERSIST_SUBSCRIPTIONS=y
 
 # ICD (Long Idle Time) — SED that sleeps for hours
 # LIT + CIP required so controllers (Apple Home) don't mark device offline.
+# IMPORTANT: CONFIG_ICD_IDLE_MODE_INTERVAL_SEC must match ICD_WAKE_INTERVAL_S
+# in platformio.ini. If they diverge, Apple Home sets subscription MaxInterval
+# from the advertised value and the subscription expires (~18 min with 900s
+# default), causing "no active subscriptions" on wake. Testing=120s, prod=3600s.
 CONFIG_ENABLE_ICD_SERVER=y
 CONFIG_ENABLE_ICD_LIT=y
 CONFIG_ENABLE_ICD_CIP=y
-CONFIG_ICD_IDLE_MODE_INTERVAL_SEC=3600
+CONFIG_ICD_IDLE_MODE_INTERVAL_SEC=120
 CONFIG_ICD_ACTIVE_MODE_INTERVAL_MS=10000
 CONFIG_ICD_ACTIVE_MODE_THRESHOLD_MS=5000
 CONFIG_ICD_SLOW_POLL_INTERVAL_MS=1000
