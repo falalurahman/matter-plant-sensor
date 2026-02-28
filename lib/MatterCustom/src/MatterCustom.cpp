@@ -251,21 +251,24 @@ void MatterCustomNode::_checkDirtyWork(intptr_t) {
     );
 }
 
-// ── waitForReportsDelivered() ────────────────────────────────────────────────
-bool MatterCustomNode::waitForReportsDelivered(uint32_t timeoutMs) {
+// ── waitForSubscription() ────────────────────────────────────────────────────
+// Phase 1+2: Wait for Thread connectivity and at least one active subscription.
+// Must be called BEFORE updating attributes so no failed CASE session attempts
+// are triggered while Thread is still joining.
+bool MatterCustomNode::waitForSubscription(uint32_t timeoutMs) {
     uint32_t start = millis();
 
     // Phase 1: Wait for Thread connectivity.
     while (!isConnected() && (millis() - start < timeoutMs)) { delay(200); }
     if (!isConnected()) {
-        log_w("MatterCustom: Thread not up after %ums — skipping report wait", timeoutMs);
+        log_w("MatterCustom: Thread not up after %ums", timeoutMs);
         return false;
     }
     log_i("MatterCustom: Thread connected (%.1fs)", (millis() - start) / 1000.0f);
 
     // Phase 2: Wait for at least one subscription to be (re-)established.
-    // With CONFIG_ENABLE_PERSIST_SUBSCRIPTIONS=y the SDK calls ResumeSubscriptions()
-    // automatically, so the callback should fire within a few seconds of Thread up.
+    // With LIT ICD + CIP the ICD server sends a Check-In after Thread joins;
+    // Apple Home responds and re-subscribes — the callback fires within seconds.
     uint32_t remaining = timeoutMs - (millis() - start);
     uint32_t subStart = millis();
     while (!_subTracker.hasActiveSubscription() && (millis() - subStart < remaining)) {
@@ -276,22 +279,31 @@ bool MatterCustomNode::waitForReportsDelivered(uint32_t timeoutMs) {
         return false;
     }
     log_i("MatterCustom: subscription active (%.1fs)", (millis() - start) / 1000.0f);
+    return true;
+}
 
-    // Phase 3: Poll GetNumDirtySubscriptions() on the CHIP thread until all
-    // pending attribute reports have been sent (max 5 s drain window).
-    constexpr uint32_t kDrainMs = 5000;
+// ── waitForDirtyDrain() ──────────────────────────────────────────────────────
+// Phase 3: Poll GetNumDirtySubscriptions() on the CHIP thread until all
+// pending attribute reports have been sent. Call AFTER attribute setters.
+bool MatterCustomNode::waitForDirtyDrain(uint32_t drainMs) {
     uint32_t drainStart = millis();
-    while (millis() - drainStart < kDrainMs) {
+    while (millis() - drainStart < drainMs) {
         chip::DeviceLayer::PlatformMgr().ScheduleWork(_checkDirtyWork, 0);
         delay(150);
         if (_sDirtyCount.load() == 0) break;
     }
-
     bool ok = (_sDirtyCount.load() == 0);
-    log_i("MatterCustom: reports %s (%.1fs total)",
-          ok ? "delivered" : "drain timeout — sleeping anyway",
-          (millis() - start) / 1000.0f);
+    log_i("MatterCustom: drain %s", ok ? "complete" : "timeout — sleeping anyway");
     return ok;
+}
+
+// ── waitForReportsDelivered() ────────────────────────────────────────────────
+// Convenience wrapper: waitForSubscription + waitForDirtyDrain.
+// Use the split API (waitForSubscription / waitForDirtyDrain) directly when
+// attributes should only be updated after subscription is confirmed.
+bool MatterCustomNode::waitForReportsDelivered(uint32_t timeoutMs) {
+    if (!waitForSubscription(timeoutMs)) return false;
+    return waitForDirtyDrain(5000);
 }
 
 #endif // CONFIG_ESP_MATTER_ENABLE_DATA_MODEL

@@ -55,10 +55,16 @@ public:
     //
     // Three-phase wait:
     //   1. Thread connectivity  — up to timeoutMs
-    //   2. Subscription active  — waits for at least one ReadHandler to establish
-    //   3. Dirty reports drain  — polls GetNumDirtySubscriptions() on CHIP thread
-    //
-    // Returns true if all dirty reports cleared before timeout.
+    // Phase 1+2: wait for Thread connectivity and at least one active subscription.
+    // Call this BEFORE updating attributes to avoid triggering failed CASE session
+    // attempts while Thread is still joining.
+    static bool waitForSubscription(uint32_t timeoutMs);
+
+    // Phase 3: drain dirty attribute reports after attribute setters have been called.
+    // Polls GetNumDirtySubscriptions() on the CHIP thread until clear or timeout.
+    static bool waitForDirtyDrain(uint32_t drainMs = 5000);
+
+    // Convenience wrapper: waitForSubscription(timeoutMs) + waitForDirtyDrain(5000).
     static bool waitForReportsDelivered(uint32_t timeoutMs = 15000);
 
     // Internal callbacks — do not call directly.
