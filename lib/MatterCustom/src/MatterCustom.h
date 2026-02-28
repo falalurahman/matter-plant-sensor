@@ -37,6 +37,11 @@ public:
     // Factory-reset all Matter credentials and restart commissioning.
     static void decommission();
 
+    // Returns true (and clears the flag) if kCommissioningComplete fired since
+    // the last call. Intended to be polled from loop() to detect fresh commissioning
+    // without triggering on subsequent wakeups from light sleep.
+    static bool getAndClearJustCommissioned();
+
     // ── Battery reporting ────────────────────────────────────────────────────
     // Update BatteryPercentageRemaining on EP0 (0–100 % → stored as 0–200).
     static bool setBatteryPercent(uint8_t percent);
@@ -56,6 +61,7 @@ private:
     static bool _initialized;
     static bool _started;
     static esp_matter::node_t *_node;
+    static volatile bool _justCommissioned;
 
     static void eventCB(const ChipDeviceEvent *event, intptr_t arg);
 };
