@@ -194,6 +194,11 @@ bool MatterCustomNode::isConnected() {
     return chip::DeviceLayer::ConnectivityMgr().IsThreadAttached();
 }
 
+bool MatterCustomNode::isCommissioningWindowOpen() {
+    return chip::Server::GetInstance().GetCommissioningWindowManager()
+               .IsCommissioningWindowOpen();
+}
+
 void MatterCustomNode::decommission() {
     esp_matter::factory_reset();
 }
