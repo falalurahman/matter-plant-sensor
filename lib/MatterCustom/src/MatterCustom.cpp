@@ -14,15 +14,17 @@ using namespace esp_matter::identification;
 using namespace chip::app::Clusters;
 
 // ── Static member storage ────────────────────────────────────────────────────
-bool MatterCustomNode::_initialized = false;
-bool MatterCustomNode::_started     = false;
+bool MatterCustomNode::_initialized      = false;
+bool MatterCustomNode::_started          = false;
 esp_matter::node_t *MatterCustomNode::_node = nullptr;
+volatile bool MatterCustomNode::_justCommissioned = false;
 
 // ── Event callback ───────────────────────────────────────────────────────────
 void MatterCustomNode::eventCB(const ChipDeviceEvent *event, intptr_t /*arg*/) {
     switch (event->Type) {
         case chip::DeviceLayer::DeviceEventType::kCommissioningComplete:
             log_i("Matter commissioning complete");
+            _justCommissioned = true;
             break;
         case chip::DeviceLayer::DeviceEventType::kFabricRemoved:
             log_i("Fabric removed");
@@ -71,6 +73,13 @@ esp_err_t MatterCustomNode::identifyCB(
         return ep->endpointIdentifyCB(endpoint_id, active) ? ESP_OK : ESP_FAIL;
     }
     return ESP_OK;
+}
+
+// ── getAndClearJustCommissioned() ────────────────────────────────────────────
+bool MatterCustomNode::getAndClearJustCommissioned() {
+    if (!_justCommissioned) return false;
+    _justCommissioned = false;
+    return true;
 }
 
 // ── init() ───────────────────────────────────────────────────────────────────

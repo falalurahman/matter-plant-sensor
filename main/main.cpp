@@ -29,6 +29,9 @@
 #ifndef ICD_WAKE_INTERVAL_S
 #define ICD_WAKE_INTERVAL_S 3600  // 1 hour; mirrors CONFIG_ICD_IDLE_MODE_INTERVAL_SEC
 #endif
+#ifndef COMMISSIONING_GRACE_MS
+#define COMMISSIONING_GRACE_MS 300000  // 5 min stay-awake after first commissioning
+#endif
 
 // ─── Hardware constants ──────────────────────────────────────────────────────
 static constexpr uint8_t  PIN_BATTERY_ADC  = 2;
@@ -86,9 +89,10 @@ static bool     gButtonPressed    = false;
 static uint32_t gButtonPressedAt  = 0;
 
 // ─── Timing ──────────────────────────────────────────────────────────────────
-static uint32_t gIdleStart    = 0;
-static uint32_t gBH1750Start  = 0;
-static bool     gBH1750Armed  = false;
+static uint32_t gIdleStart       = 0;
+static uint32_t gBH1750Start     = 0;
+static bool     gBH1750Armed     = false;
+static uint32_t gStayAwakeUntil  = 0;  // millis() deadline for post-commissioning grace
 
 // ─── RTC state (survives light sleep) ────────────────────────────────────────
 RTC_DATA_ATTR static uint32_t gBootCount = 0;
@@ -261,6 +265,30 @@ void loop() {
             break;  // stay in MATTER_READY
         }
 
+        // One-time grace period after fresh commissioning.  The device sits idle
+        // here so Apple Home (and other controllers) can complete subscriptions,
+        // attribute reads, and ICD registration without the device going to sleep.
+        // graceGiven is a plain static (not RTC) — it resets after esp_restart(),
+        // which the decommission handler calls, so re-commissioning always gets
+        // the full grace period.  Light sleep preserves RAM, so on wakeup
+        // graceGiven stays true and the grace does NOT re-trigger.
+        static bool graceGiven = false;
+        if (!graceGiven && MatterCustomNode::getAndClearJustCommissioned()) {
+            gStayAwakeUntil = millis() + COMMISSIONING_GRACE_MS;
+            graceGiven = true;
+            Serial.printf("Commissioning done — holding awake for %u s\n",
+                          COMMISSIONING_GRACE_MS / 1000);
+        }
+        if (gStayAwakeUntil > 0 && millis() < gStayAwakeUntil) {
+            static uint32_t lastGraceLog = 0;
+            if (millis() - lastGraceLog >= 15000) {
+                lastGraceLog = millis();
+                Serial.printf("  Grace: %lu s remaining...\n",
+                              (gStayAwakeUntil - millis()) / 1000);
+            }
+            break;  // Stay in MATTER_READY, do nothing
+        }
+
         Serial.println("Matter commissioned and Thread connected.");
         gIdleStart = millis();
         gState     = State::IDLE_WAIT;
@@ -347,7 +375,7 @@ void loop() {
         // Allow the Matter stack a moment to dispatch the updates.
         delay(1000);
 
-        gState = State::POWER_SAVE;
+        gState = State::IDLE_WAIT;
         break;
     }
 
@@ -355,20 +383,20 @@ void loop() {
     // Enter light sleep.  The OpenThread SED stack wakes automatically every
     // CONFIG_ICD_SLOW_POLL_INTERVAL_MS to maintain the Thread parent link.
     // Our timer wakeup fires after ICD_WAKE_INTERVAL_S for the next reading.
-    case State::POWER_SAVE: {
-        Serial.printf("Entering light sleep for %d s…\n", ICD_WAKE_INTERVAL_S);
-        Serial.flush();
+    // case State::POWER_SAVE: {
+    //     Serial.printf("Entering light sleep for %d s…\n", ICD_WAKE_INTERVAL_S);
+    //     Serial.flush();
 
-        esp_sleep_enable_timer_wakeup(
-            static_cast<uint64_t>(ICD_WAKE_INTERVAL_S) * 1000000ULL);
-        esp_light_sleep_start();
+    //     esp_sleep_enable_timer_wakeup(
+    //         static_cast<uint64_t>(ICD_WAKE_INTERVAL_S) * 1000000ULL);
+    //     esp_light_sleep_start();
 
-        // Execution resumes here after wakeup.
-        Serial.println("Woke from light sleep.");
-        gIdleStart = millis();
-        gState     = State::IDLE_WAIT;
-        break;
-    }
+    //     // Execution resumes here after wakeup.
+    //     Serial.println("Woke from light sleep.");
+    //     gIdleStart = millis();
+    //     gState     = State::IDLE_WAIT;
+    //     break;
+    // }
 
     }  // end switch
 }
