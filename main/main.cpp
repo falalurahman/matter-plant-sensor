@@ -14,7 +14,6 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <esp_sleep.h>
-#include <driver/gpio.h>
 #include <math.h>
 
 #include "MatterCustom.h"
@@ -93,8 +92,9 @@ static uint32_t gIdleStart       = 0;
 static uint32_t gBH1750Start     = 0;
 static bool     gBH1750Armed     = false;
 
-// ─── RTC state (survives light sleep) ────────────────────────────────────────
-RTC_DATA_ATTR static uint32_t gBootCount = 0;
+// ─── RTC state (survives deep sleep) ─────────────────────────────────────────
+RTC_DATA_ATTR static uint32_t               gBootCount  = 0;
+RTC_DATA_ATTR static esp_sleep_wakeup_cause_t gWakeReason = ESP_SLEEP_WAKEUP_UNDEFINED;
 
 // ════════════════════════════════════════════════════════════════════════════
 // ── I2C drivers (minimal, no external library) ───────────────────────────────
@@ -178,8 +178,8 @@ void setup() {
     gBootCount++;
     Serial.printf("\n=== Plant Sensor boot #%lu ===\n", gBootCount);
 
-    esp_sleep_wakeup_cause_t wakeReason = esp_sleep_get_wakeup_cause();
-    Serial.printf("Wakeup reason: %d\n", wakeReason);
+    gWakeReason = esp_sleep_get_wakeup_cause();
+    Serial.printf("Wakeup reason: %d\n", (int)gWakeReason);
 
     gState = State::SYSTEM_BOOT;
 }
@@ -233,9 +233,15 @@ void loop() {
     // If already commissioned (power-cycle of provisioned device) → skip grace.
     case State::MATTER_READY: {
         if (MatterCustomNode::isCommissioned()) {
-            Serial.println("Already commissioned — going directly to sensor cycle.");
-            gIdleStart = millis();
-            gState = State::IDLE_WAIT;
+            if (gWakeReason == ESP_SLEEP_WAKEUP_EXT1) {
+                // Button woke us from deep sleep — handle as short/long press.
+                Serial.println("Woke from button press — entering ACTION_BUTTON_PRESSED.");
+                gState = State::ACTION_BUTTON_PRESSED;
+            } else {
+                Serial.println("Already commissioned — going directly to sensor cycle.");
+                gIdleStart = millis();
+                gState = State::IDLE_WAIT;
+            }
         } else {
             gState = State::MATTER_DECOMMISSIONED;
         }
@@ -412,37 +418,34 @@ void loop() {
             lastBat = gBatteryPct;
         }
 
-        // Allow the Matter stack a moment to dispatch the updates.
-        delay(1000);
+        // Wait for Thread connectivity, subscription re-establishment, and dirty
+        // attribute reports to drain before sleeping. The 30 s budget is shared
+        // across all three phases inside waitForReportsDelivered().
+        if (!MatterCustomNode::waitForReportsDelivered(30000)) {
+            log_w("DATA_PUSH: report delivery not confirmed — sleeping anyway");
+        }
 
         gState = State::POWER_SAVE;
         break;
     }
 
     // ── POWER_SAVE ───────────────────────────────────────────────────────────
-    // Enter light sleep.  The OpenThread SED stack wakes automatically every
-    // CONFIG_ICD_SLOW_POLL_INTERVAL_MS to maintain the Thread parent link.
-    // Our timer wakeup fires after ICD_WAKE_INTERVAL_S for the next reading.
+    // Enter deep sleep.  Thread link is dropped; on wakeup setup() re-initialises
+    // the full Matter + OpenThread stack from NVS (~3–10 s Thread rejoin time).
+    // Timer wakeup fires after ICD_WAKE_INTERVAL_S for the next sensor reading.
+    // EXT1 wakeup fires on ACTION_BUTTON_PIN LOW (button press).
     case State::POWER_SAVE: {
-        Serial.printf("Entering light sleep for %d s…\n", ICD_WAKE_INTERVAL_S);
+        Serial.printf("Entering deep sleep for %d s…\n", ICD_WAKE_INTERVAL_S);
         Serial.flush();
+        delay(100);  // drain UART TX buffer before power-down
 
         esp_sleep_enable_timer_wakeup(
             static_cast<uint64_t>(ICD_WAKE_INTERVAL_S) * 1000000ULL);
-        gpio_wakeup_enable((gpio_num_t)ACTION_BUTTON_PIN, GPIO_INTR_LOW_LEVEL);
-        esp_sleep_enable_gpio_wakeup();
-        esp_light_sleep_start();
-
-        // Execution resumes here after wakeup (light sleep preserves stack/state).
-        auto wakeReason = esp_sleep_get_wakeup_cause();
-        if (wakeReason == ESP_SLEEP_WAKEUP_GPIO) {
-            Serial.println("Woke from button press.");
-            gState = State::ACTION_BUTTON_PRESSED;
-        } else {
-            Serial.println("Woke from timer.");
-            gIdleStart = millis();
-            gState = State::IDLE_WAIT;
-        }
+        // gpio_wakeup_enable is light-sleep only; use EXT1 for deep sleep.
+        esp_sleep_enable_ext1_wakeup(1ULL << ACTION_BUTTON_PIN,
+                                     ESP_EXT1_WAKEUP_ALL_LOW);
+        esp_deep_sleep_start();
+        // Does not return — next execution begins in setup() on wakeup.
         break;
     }
 

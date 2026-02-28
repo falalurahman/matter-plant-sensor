@@ -5,7 +5,9 @@
 
 #include "MatterCustom.h"
 #include <app/server/Server.h>
+#include <app/InteractionModelEngine.h>
 #include <platform/ConnectivityManager.h>
+#include <platform/CHIPDeviceLayer.h>
 
 using namespace esp_matter;
 using namespace esp_matter::endpoint;
@@ -18,6 +20,8 @@ bool MatterCustomNode::_initialized      = false;
 bool MatterCustomNode::_started          = false;
 esp_matter::node_t *MatterCustomNode::_node = nullptr;
 volatile bool MatterCustomNode::_justCommissioned = false;
+MatterCustomNode::SubscriptionTracker  MatterCustomNode::_subTracker;
+std::atomic<uint32_t> MatterCustomNode::_sDirtyCount{0};
 
 // ── Event callback ───────────────────────────────────────────────────────────
 void MatterCustomNode::eventCB(const ChipDeviceEvent *event, intptr_t /*arg*/) {
@@ -126,6 +130,20 @@ bool MatterCustomNode::init() {
         }
     }
 
+    // Add ICD Management cluster to EP0 — required for LIT ICD.
+    // Exposes IdleModeDuration, ActiveModeDuration, RegisteredClients to controllers.
+    // Timing values come from CONFIG_ICD_* sdkconfig entries.
+    if (root_ep) {
+        icd_management::config_t icd_cfg{};
+        cluster_t *icd_cluster = icd_management::create(
+            root_ep, &icd_cfg, CLUSTER_FLAG_SERVER, 0);
+        if (icd_cluster == nullptr) {
+            log_w("MatterCustom: failed to create ICD Management cluster on EP0");
+        } else {
+            log_i("MatterCustom: ICD Management cluster added to EP0");
+        }
+    }
+
     _initialized = true;
     log_i("MatterCustom: node initialized");
     return true;
@@ -157,6 +175,13 @@ bool MatterCustomNode::start() {
     }
     _started = true;
     log_i("MatterCustom: Matter stack started");
+
+    // Register subscription lifecycle callback so we can track when controllers
+    // re-establish subscriptions after deep sleep wakeup.
+    _subTracker.reset();
+    chip::app::InteractionModelEngine::GetInstance()
+        ->RegisterReadHandlerAppCallback(&_subTracker);
+    log_i("MatterCustom: SubscriptionTracker registered");
     return true;
 }
 
@@ -198,6 +223,70 @@ bool MatterCustomNode::setBatteryPercent(uint8_t percent) {
     attribute::get_val(attr, &val);
     val.val.u8 = raw;
     return attribute::update(0, kPowerSourceCluster, kBatPercentAttr, &val) == ESP_OK;
+}
+
+// ── SubscriptionTracker callbacks ────────────────────────────────────────────
+void MatterCustomNode::SubscriptionTracker::OnSubscriptionEstablished(chip::app::ReadHandler &) {
+    _count.fetch_add(1);
+    log_i("MatterCustom: subscription established (active=%d)", _count.load());
+}
+
+void MatterCustomNode::SubscriptionTracker::OnSubscriptionTerminated(chip::app::ReadHandler &) {
+    if (_count.load() > 0) _count.fetch_sub(1);
+    log_i("MatterCustom: subscription terminated (active=%d)", _count.load());
+}
+
+// ── _checkDirtyWork ──────────────────────────────────────────────────────────
+// Runs on the CHIP task thread (via PlatformMgr().ScheduleWork) to safely read
+// GetNumDirtySubscriptions() without a data race.
+void MatterCustomNode::_checkDirtyWork(intptr_t) {
+    _sDirtyCount.store(
+        (uint32_t)chip::app::InteractionModelEngine::GetInstance()
+                      ->GetNumDirtySubscriptions()
+    );
+}
+
+// ── waitForReportsDelivered() ────────────────────────────────────────────────
+bool MatterCustomNode::waitForReportsDelivered(uint32_t timeoutMs) {
+    uint32_t start = millis();
+
+    // Phase 1: Wait for Thread connectivity.
+    while (!isConnected() && (millis() - start < timeoutMs)) { delay(200); }
+    if (!isConnected()) {
+        log_w("MatterCustom: Thread not up after %ums — skipping report wait", timeoutMs);
+        return false;
+    }
+    log_i("MatterCustom: Thread connected (%.1fs)", (millis() - start) / 1000.0f);
+
+    // Phase 2: Wait for at least one subscription to be (re-)established.
+    // With CONFIG_ENABLE_PERSIST_SUBSCRIPTIONS=y the SDK calls ResumeSubscriptions()
+    // automatically, so the callback should fire within a few seconds of Thread up.
+    uint32_t remaining = timeoutMs - (millis() - start);
+    uint32_t subStart = millis();
+    while (!_subTracker.hasActiveSubscription() && (millis() - subStart < remaining)) {
+        delay(200);
+    }
+    if (!_subTracker.hasActiveSubscription()) {
+        log_w("MatterCustom: no active subscriptions within timeout — controller not subscribed yet");
+        return false;
+    }
+    log_i("MatterCustom: subscription active (%.1fs)", (millis() - start) / 1000.0f);
+
+    // Phase 3: Poll GetNumDirtySubscriptions() on the CHIP thread until all
+    // pending attribute reports have been sent (max 5 s drain window).
+    constexpr uint32_t kDrainMs = 5000;
+    uint32_t drainStart = millis();
+    while (millis() - drainStart < kDrainMs) {
+        chip::DeviceLayer::PlatformMgr().ScheduleWork(_checkDirtyWork, 0);
+        delay(150);
+        if (_sDirtyCount.load() == 0) break;
+    }
+
+    bool ok = (_sDirtyCount.load() == 0);
+    log_i("MatterCustom: reports %s (%.1fs total)",
+          ok ? "delivered" : "drain timeout — sleeping anyway",
+          (millis() - start) / 1000.0f);
+    return ok;
 }
 
 #endif // CONFIG_ESP_MATTER_ENABLE_DATA_MODEL
