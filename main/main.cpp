@@ -1,142 +1,374 @@
+// main.cpp — ESP32-H2 Matter Plant Sensor
+//
+// Architecture: non-blocking FSM, Matter-over-Thread, ICD (Sleepy End Device).
+// No dependency on the high-level Matter.h wrapper; uses MatterCustom + direct
+// esp_matter SDK calls throughout.
+//
+// Hardware (ESP32-H2 SuperMini):
+//   GPIO 1 (ADC1_CH0) — capacitive soil-moisture sensor
+//   GPIO 2 (ADC1_CH1) — battery voltage via 1:1 resistor divider
+//   GPIO 4 (SDA) / GPIO 5 (SCL) — I2C bus
+//     0x44 — SHT4x  (ambient temperature + humidity)
+//     0x23 — BH1750 (ambient light, lux)
+
 #include <Arduino.h>
+#include <Wire.h>
 #include <esp_sleep.h>
-#include "MatterInit.h"
+#include <math.h>
+
+#include "MatterCustom.h"
+#include "MatterTempSensor.h"
+#include "MatterAmbientHumidity.h"
+#include "MatterLightSensor.h"
 #include "MatterSoilSensor.h"
 
-// Build-flag defaults (override via -D in platformio.ini)
+// ─── Build-flag defaults ────────────────────────────────────────────────────
 #ifndef SOIL_MOISTURE_PIN
 #define SOIL_MOISTURE_PIN 1
 #endif
-
 #ifndef ICD_WAKE_INTERVAL_S
-#define ICD_WAKE_INTERVAL_S 3600  // 1 hour default, also set in sdkconfig as CONFIG_ICD_IDLE_MODE_INTERVAL_SEC
+#define ICD_WAKE_INTERVAL_S 3600  // 1 hour; mirrors CONFIG_ICD_IDLE_MODE_INTERVAL_SEC
 #endif
 
-// Matter Soil Sensor endpoint (Matter 1.5 cluster 0x040B)
-MatterSoilSensor soilMoisture;
+// ─── Hardware constants ──────────────────────────────────────────────────────
+static constexpr uint8_t  PIN_BATTERY_ADC  = 2;
+static constexpr uint8_t  PIN_I2C_SDA      = 4;
+static constexpr uint8_t  PIN_I2C_SCL      = 5;
+static constexpr uint8_t  I2C_ADDR_SHT4X   = 0x44;
+static constexpr uint8_t  I2C_ADDR_BH1750  = 0x23;
 
-// Boot button for decommissioning
-const uint8_t buttonPin = BOOT_PIN;
-uint32_t button_time_stamp = 0;
-bool button_state = false;
-const uint32_t decommissioningTimeout = 5000;  // 5 seconds
+// Decommission button (BOOT pin)
+static constexpr uint8_t  BOOT_BUTTON_PIN  = BOOT_PIN;
+static constexpr uint32_t DECOMMISSION_MS  = 5000;
 
-// Track boot count in RTC memory (survives deep sleep)
-RTC_DATA_ATTR uint32_t bootCount = 0;
+// Battery voltage limits (mV) for a single-cell LiPo, 1:1 divider on ADC.
+// ADC attenuation 11 dB → full-scale ~3100 mV.  Divider halves Vbat.
+static constexpr float VBAT_MAX_MV = 4200.0f;
+static constexpr float VBAT_MIN_MV = 3000.0f;
+static constexpr float ADC_FULL_MV = 3100.0f;
 
-double readSoilMoisture() {
-    // Read raw ADC value (12-bit: 0-4095)
+// Minimum change required before pushing a Matter attribute update.
+static constexpr double TEMP_THRESHOLD_C    = 0.1;   // °C
+static constexpr double HUMIDITY_THRESHOLD  = 0.5;   // %
+static constexpr float  LUX_THRESHOLD_PCT   = 5.0f;  // % relative change
+static constexpr double SOIL_THRESHOLD      = 0.5;   // %
+static constexpr uint8_t BATTERY_THRESHOLD  = 1;     // %
+
+// BH1750 measurement time for Continuous High-Resolution Mode 2 (0.5 lx).
+static constexpr uint32_t BH1750_MEAS_MS = 180;
+
+// ─── Matter endpoints ────────────────────────────────────────────────────────
+static MatterTempSensor     gTempSensor;
+static MatterAmbientHumidity gAmbHumidity;
+static MatterLightSensor    gLightSensor;
+static MatterSoilSensor     gSoilSensor;
+
+// ─── FSM ─────────────────────────────────────────────────────────────────────
+enum class State : uint8_t {
+    SYSTEM_BOOT,
+    MATTER_READY,
+    IDLE_WAIT,
+    SENSOR_READ,
+    DATA_PUSH,
+    POWER_SAVE,
+};
+static State gState = State::SYSTEM_BOOT;
+
+// ─── Sensor data (last read) ─────────────────────────────────────────────────
+static double  gTempC        = 0.0;
+static double  gHumidityPct  = 0.0;
+static float   gLux          = 0.0f;
+static double  gSoilPct      = 0.0;
+static uint8_t gBatteryPct   = 0;
+
+// ─── Decommission button ─────────────────────────────────────────────────────
+static bool     gButtonPressed    = false;
+static uint32_t gButtonPressedAt  = 0;
+
+// ─── Timing ──────────────────────────────────────────────────────────────────
+static uint32_t gIdleStart    = 0;
+static uint32_t gBH1750Start  = 0;
+static bool     gBH1750Armed  = false;
+
+// ─── RTC state (survives light sleep) ────────────────────────────────────────
+RTC_DATA_ATTR static uint32_t gBootCount = 0;
+
+// ════════════════════════════════════════════════════════════════════════════
+// ── I2C drivers (minimal, no external library) ───────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── SHT4x ────────────────────────────────────────────────────────────────────
+// Trigger a high-precision measurement (0xFD) and synchronously read the result.
+// Returns false if the sensor is absent or CRC fails.
+static bool sht4xRead(double &tempC, double &humPct) {
+    Wire.beginTransmission(I2C_ADDR_SHT4X);
+    Wire.write(0xFD);  // Measure T+RH, high precision
+    if (Wire.endTransmission() != 0) return false;
+
+    delay(10);  // SHT4x high-precision measurement time ≤ 8.3 ms
+
+    if (Wire.requestFrom(static_cast<uint8_t>(I2C_ADDR_SHT4X), static_cast<uint8_t>(6)) != 6)
+        return false;
+
+    uint8_t buf[6];
+    for (auto &b : buf) b = Wire.read();
+
+    uint16_t rawT  = (static_cast<uint16_t>(buf[0]) << 8) | buf[1];
+    uint16_t rawRH = (static_cast<uint16_t>(buf[3]) << 8) | buf[4];
+
+    tempC  = -45.0 + 175.0 * rawT  / 65535.0;
+    humPct = constrain(-6.0 + 125.0 * rawRH / 65535.0, 0.0, 100.0);
+    return true;
+}
+
+// ── BH1750 ───────────────────────────────────────────────────────────────────
+// Send the "Power On" + "Continuous High-Resolution Mode 2" commands.
+// Must be called once during init; measurements start automatically.
+static void bh1750Init() {
+    Wire.beginTransmission(I2C_ADDR_BH1750);
+    Wire.write(0x01);  // Power On
+    Wire.endTransmission();
+    delay(1);
+    Wire.beginTransmission(I2C_ADDR_BH1750);
+    Wire.write(0x11);  // Continuous High-Resolution Mode 2 (0.5 lx, 120 ms typ)
+    Wire.endTransmission();
+}
+
+// Trigger a one-time high-resolution mode 2 measurement (non-blocking start).
+static void bh1750Trigger() {
+    Wire.beginTransmission(I2C_ADDR_BH1750);
+    Wire.write(0x21);  // One-Time High-Resolution Mode 2
+    Wire.endTransmission();
+}
+
+// Read the most recent BH1750 result.  Call after BH1750_MEAS_MS has elapsed.
+static bool bh1750Read(float &lux) {
+    if (Wire.requestFrom(static_cast<uint8_t>(I2C_ADDR_BH1750), static_cast<uint8_t>(2)) != 2)
+        return false;
+    uint16_t raw = (static_cast<uint16_t>(Wire.read()) << 8) | Wire.read();
+    lux = raw / 1.2f;  // BH1750 data sheet conversion factor
+    return true;
+}
+
+// ── ADC helpers ───────────────────────────────────────────────────────────────
+static double readSoilMoisture() {
     uint16_t raw = analogRead(SOIL_MOISTURE_PIN);
-    // Map to 0-100% (invert: dry = high ADC, wet = low ADC for capacitive sensors)
-    double moisture = map(raw, 4095, 0, 0, 10000) / 100.0;
-    // Clamp to valid range
-    if (moisture < 0.0) moisture = 0.0;
-    if (moisture > 100.0) moisture = 100.0;
-    return moisture;
+    // Capacitive sensor: dry = high ADC (4095), wet = low ADC (0).  Invert.
+    double pct = map(raw, 4095, 0, 0, 10000) / 100.0;
+    return constrain(pct, 0.0, 100.0);
 }
 
-void setup() {
-    Serial.begin(115200);
-    bootCount++;
-
-    Serial.printf("Boot count: %u\n", bootCount);
-    Serial.printf("Wake interval: %d seconds\n", ICD_WAKE_INTERVAL_S);
-
-    // Print wakeup reason
-    esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-    switch (wakeup_reason) {
-        case ESP_SLEEP_WAKEUP_TIMER:
-            Serial.println("Wakeup: timer");
-            break;
-        case ESP_SLEEP_WAKEUP_EXT0:
-            Serial.println("Wakeup: external signal (ext0)");
-            break;
-        default:
-            Serial.printf("Wakeup: other (%d) - likely power-on/reset\n", wakeup_reason);
-            break;
-    }
-
-    // Initialize decommission button
-    pinMode(buttonPin, INPUT_PULLUP);
-
-    // Configure ADC
-    analogSetAttenuation(ADC_11db);
-
-    // ICD parameters are configured at compile time via sdkconfig.defaults:
-    //   CONFIG_ICD_IDLE_MODE_INTERVAL_SEC=3600  (1 hour)
-    //   CONFIG_ICD_ACTIVE_MODE_INTERVAL_MS=10000
-    //   CONFIG_ICD_ACTIVE_MODE_THRESHOLD_MS=5000
-    //   CONFIG_ICD_SLOW_POLL_INTERVAL_MS=30000
-    //   CONFIG_ICD_FAST_POLL_INTERVAL_MS=200
-
-    // Initialize soil moisture sensor endpoint with initial reading
-    double initialMoisture = readSoilMoisture();
-    soilMoisture.begin(initialMoisture);
-    Serial.printf("Initial soil moisture: %.2f%%\n", initialMoisture);
-
-    // Start Matter (must be called after all endpoints are initialized)
-    MatterInit.begin();
-
-    // Handle commissioning on first boot
-    if (!MatterInit.isDeviceCommissioned()) {
-        Serial.println("Device not commissioned. Waiting for commissioning...");
-        Serial.printf("Manual pairing code: %s\n", MatterInit.getManualPairingCode().c_str());
-        Serial.printf("QR code URL: %s\n", MatterInit.getOnboardingQRCodeUrl().c_str());
-
-        // Wait for commissioning (check button for decommission during wait)
-        while (!MatterInit.isDeviceCommissioned()) {
-            delay(100);
-
-            // Check decommission button during commissioning wait
-            if (digitalRead(buttonPin) == LOW && !button_state) {
-                button_time_stamp = millis();
-                button_state = true;
-            }
-            if (digitalRead(buttonPin) == HIGH && button_state) {
-                button_state = false;
-            }
-        }
-        Serial.println("Device commissioned successfully!");
-    }
-
-    // Wait for network connection
-    if (!MatterInit.isDeviceConnected()) {
-        Serial.println("Waiting for Thread network connection...");
-        while (!MatterInit.isDeviceConnected()) {
-            delay(100);
-        }
-        Serial.println("Connected to Thread network.");
-    }
+static uint8_t readBatteryPercent() {
+    uint16_t raw = analogRead(PIN_BATTERY_ADC);
+    float adc_mv  = raw * ADC_FULL_MV / 4095.0f;
+    float vbat_mv = adc_mv * 2.0f;  // 1:1 divider → actual Vbat = 2× ADC voltage
+    float pct = (vbat_mv - VBAT_MIN_MV) / (VBAT_MAX_MV - VBAT_MIN_MV) * 100.0f;
+    return static_cast<uint8_t>(constrain(pct, 0.0f, 100.0f));
 }
 
-void loop() {
-    // Read and report soil moisture
-    double moisture = readSoilMoisture();
-    soilMoisture.setMoisture(moisture);
-    Serial.printf("Soil moisture: %.2f%%\n", moisture);
-
-    // Check decommission button
-    if (digitalRead(buttonPin) == LOW && !button_state) {
-        button_time_stamp = millis();
-        button_state = true;
+// ── Button debounce helper ────────────────────────────────────────────────────
+static void checkDecommissionButton() {
+    bool pressed = (digitalRead(BOOT_BUTTON_PIN) == LOW);
+    if (pressed && !gButtonPressed) {
+        gButtonPressedAt = millis();
+        gButtonPressed   = true;
+    } else if (!pressed) {
+        gButtonPressed = false;
     }
-    if (digitalRead(buttonPin) == HIGH && button_state) {
-        button_state = false;
-    }
-    if (button_state && (millis() - button_time_stamp) > decommissioningTimeout) {
-        Serial.println("Decommissioning device...");
-        MatterInit.decommission();
-        Serial.println("Decommissioned. Restarting...");
+    if (gButtonPressed && (millis() - gButtonPressedAt) >= DECOMMISSION_MS) {
+        Serial.println("Decommissioning — factory reset…");
+        MatterCustomNode::decommission();
         delay(500);
         esp_restart();
     }
+}
 
-    // Allow Matter stack time to process and send the update
-    delay(5000);
+// ════════════════════════════════════════════════════════════════════════════
+// ── Arduino entry points ─────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
 
-    // Configure timer wakeup and enter deep sleep
-    Serial.printf("Entering deep sleep for %d seconds...\n", ICD_WAKE_INTERVAL_S);
-    Serial.flush();
-    esp_sleep_enable_timer_wakeup((uint64_t)ICD_WAKE_INTERVAL_S * 1000000ULL);
-    esp_deep_sleep_start();
+void setup() {
+    Serial.begin(115200);
+    gBootCount++;
+    Serial.printf("\n=== Plant Sensor boot #%lu ===\n", gBootCount);
+
+    esp_sleep_wakeup_cause_t wakeReason = esp_sleep_get_wakeup_cause();
+    Serial.printf("Wakeup reason: %d\n", wakeReason);
+
+    gState = State::SYSTEM_BOOT;
+}
+
+void loop() {
+    switch (gState) {
+
+    // ── SYSTEM_BOOT ──────────────────────────────────────────────────────────
+    case State::SYSTEM_BOOT: {
+        // Button
+        pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
+
+        // ADC
+        analogSetAttenuation(ADC_11db);
+
+        // I2C
+        Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+        bh1750Init();
+        delay(200);  // BH1750 first measurement settling
+
+        // Matter node
+        if (!MatterCustomNode::init()) {
+            Serial.println("ERROR: Matter node init failed — halting");
+            while (true) delay(1000);
+        }
+
+        // Register endpoints (order determines endpoint IDs: EP1, EP2, EP3, EP4).
+        gTempSensor.begin(0.0);
+        gAmbHumidity.begin(0.0);
+        gLightSensor.begin(0.0f);
+        gSoilSensor.begin(0.0);
+
+        // Start Matter / OpenThread stack.
+        if (!MatterCustomNode::start()) {
+            Serial.println("ERROR: Matter stack start failed — halting");
+            while (true) delay(1000);
+        }
+
+        Serial.printf("Wake interval: %d s\n", ICD_WAKE_INTERVAL_S);
+        gState = State::MATTER_READY;
+        break;
+    }
+
+    // ── MATTER_READY ─────────────────────────────────────────────────────────
+    case State::MATTER_READY: {
+        checkDecommissionButton();
+
+        if (!MatterCustomNode::isCommissioned()) {
+            static uint32_t lastPrint = 0;
+            if (millis() - lastPrint >= 10000) {
+                lastPrint = millis();
+                Serial.println("Waiting for commissioning via BLE…");
+                Serial.printf("  Setup discriminator : %d\n", MATTER_DEVICE_SETUP_DISCRIMINATOR);
+                Serial.printf("  Setup passcode      : %lu\n", (unsigned long)MATTER_DEVICE_SETUP_PASSCODE);
+            }
+            break;  // stay in MATTER_READY
+        }
+
+        if (!MatterCustomNode::isConnected()) {
+            static uint32_t lastPrint = 0;
+            if (millis() - lastPrint >= 5000) {
+                lastPrint = millis();
+                Serial.println("Waiting for Thread network connection…");
+            }
+            break;  // stay in MATTER_READY
+        }
+
+        Serial.println("Matter commissioned and Thread connected.");
+        gIdleStart = millis();
+        gState     = State::IDLE_WAIT;
+        break;
+    }
+
+    // ── IDLE_WAIT ────────────────────────────────────────────────────────────
+    // Short active-wait so the Matter stack can process any queued messages
+    // before we enter sensor reading.  Uses millis() — non-blocking.
+    case State::IDLE_WAIT: {
+        checkDecommissionButton();
+
+        // On first boot give the stack 2 s to settle after commissioning/join.
+        if (millis() - gIdleStart >= 2000) {
+            gState = State::SENSOR_READ;
+            // Arm BH1750 one-shot measurement
+            bh1750Trigger();
+            gBH1750Start = millis();
+            gBH1750Armed = true;
+        }
+        break;
+    }
+
+    // ── SENSOR_READ ──────────────────────────────────────────────────────────
+    case State::SENSOR_READ: {
+        checkDecommissionButton();
+
+        // Wait for BH1750 conversion to finish (~180 ms).
+        if (gBH1750Armed && (millis() - gBH1750Start < BH1750_MEAS_MS)) break;
+        gBH1750Armed = false;
+
+        // Read SHT4x (blocking, ~10 ms).
+        if (!sht4xRead(gTempC, gHumidityPct)) {
+            log_w("SHT4x read failed — using previous values");
+        }
+
+        // Read BH1750.
+        if (!bh1750Read(gLux)) {
+            log_w("BH1750 read failed — using previous value");
+        }
+
+        // Read ADC sensors.
+        gSoilPct    = readSoilMoisture();
+        gBatteryPct = readBatteryPercent();
+
+        Serial.printf("Sensors → T=%.2f°C  RH=%.1f%%  Lux=%.1f  Soil=%.1f%%  Bat=%u%%\n",
+                      gTempC, gHumidityPct, gLux, gSoilPct, gBatteryPct);
+
+        gState = State::DATA_PUSH;
+        break;
+    }
+
+    // ── DATA_PUSH ────────────────────────────────────────────────────────────
+    case State::DATA_PUSH: {
+        // Only push if the change exceeds the threshold (saves radio traffic).
+        static double  lastTemp    = -999.0;
+        static double  lastHum     = -1.0;
+        static float   lastLux     = -1.0f;
+        static double  lastSoil    = -1.0;
+        static uint8_t lastBat     = 255;
+
+        if (fabs(gTempC - lastTemp) >= TEMP_THRESHOLD_C) {
+            gTempSensor.setTemperature(gTempC);
+            lastTemp = gTempC;
+        }
+        if (fabs(gHumidityPct - lastHum) >= HUMIDITY_THRESHOLD) {
+            gAmbHumidity.setHumidity(gHumidityPct);
+            lastHum = gHumidityPct;
+        }
+        float luxChange = (lastLux > 0.0f) ? fabsf(gLux - lastLux) / lastLux * 100.0f : 100.0f;
+        if (luxChange >= LUX_THRESHOLD_PCT) {
+            gLightSensor.setLux(gLux);
+            lastLux = gLux;
+        }
+        if (fabs(gSoilPct - lastSoil) >= SOIL_THRESHOLD) {
+            gSoilSensor.setMoisture(gSoilPct);
+            lastSoil = gSoilPct;
+        }
+        if (abs((int)gBatteryPct - (int)lastBat) >= BATTERY_THRESHOLD) {
+            MatterCustomNode::setBatteryPercent(gBatteryPct);
+            lastBat = gBatteryPct;
+        }
+
+        // Allow the Matter stack a moment to dispatch the updates.
+        delay(1000);
+
+        gState = State::POWER_SAVE;
+        break;
+    }
+
+    // ── POWER_SAVE ───────────────────────────────────────────────────────────
+    // Enter light sleep.  The OpenThread SED stack wakes automatically every
+    // CONFIG_ICD_SLOW_POLL_INTERVAL_MS to maintain the Thread parent link.
+    // Our timer wakeup fires after ICD_WAKE_INTERVAL_S for the next reading.
+    case State::POWER_SAVE: {
+        Serial.printf("Entering light sleep for %d s…\n", ICD_WAKE_INTERVAL_S);
+        Serial.flush();
+
+        esp_sleep_enable_timer_wakeup(
+            static_cast<uint64_t>(ICD_WAKE_INTERVAL_S) * 1000000ULL);
+        esp_light_sleep_start();
+
+        // Execution resumes here after wakeup.
+        Serial.println("Woke from light sleep.");
+        gIdleStart = millis();
+        gState     = State::IDLE_WAIT;
+        break;
+    }
+
+    }  // end switch
 }
