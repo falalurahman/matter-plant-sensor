@@ -1,0 +1,7 @@
+{
+  "name": "MatterCustom",
+  "version": "1.0.0",
+  "description": "Minimalist Matter endpoint implementations for ESP32-H2 plant sensor. Bypasses the full Matter.h abstraction; uses only MatterEndPoint.h and direct esp_matter SDK calls.",
+  "keywords": ["matter", "esp32", "thread", "sensor"],
+  "frameworks": ["arduino", "espidf"]
+}

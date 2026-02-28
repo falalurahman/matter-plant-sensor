@@ -1,8 +1,0 @@
-{
-  "name": "MatterDeviceProvider",
-  "version": "1.0.0",
-  "description": "Reusable Matter device info and commissionable data providers for ESP32 PlatformIO projects",
-  "keywords": ["matter", "esp32", "iot", "commissioning"],
-  "frameworks": ["arduino", "espidf"],
-  "platforms": ["espressif32"]
-}

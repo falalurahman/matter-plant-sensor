@@ -17,6 +17,10 @@ CONFIG_ESP_MATTER_ENABLE_DATA_MODEL=y
 # Matter over Thread (ESP32-H2 native)
 CONFIG_ENABLE_MATTER_OVER_THREAD=y
 
+# BLE stack (required for CHIPoBLE commissioning)
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+
 # BLE commissioning
 CONFIG_ENABLE_CHIPOBLE=y
 
@@ -39,3 +43,33 @@ CONFIG_ICD_FAST_POLL_INTERVAL_MS=200
 
 # mbedTLS - HKDF required by Matter crypto
 CONFIG_MBEDTLS_HKDF_C=y
+
+# ============================================================================
+# Debug Logging Configuration
+# ============================================================================
+
+# ESP Log Level - Set to DEBUG for detailed logs
+CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
+CONFIG_LOG_DEFAULT_LEVEL=4
+CONFIG_LOG_MAXIMUM_LEVEL=5
+
+# Matter/CHIP Debug Logging
+CONFIG_ENABLE_CHIP_SHELL=n
+CONFIG_CHIP_LOG_FILTERING=n
+
+# Enable detailed logs for Matter components
+CONFIG_LOG_CHIP_DETAIL=y
+CONFIG_LOG_CHIP_PROGRESS=y
+CONFIG_LOG_CHIP_ERROR=y
+
+# BLE Debug Logging
+CONFIG_BT_LOG_LEVEL=4
+CONFIG_BLE_DEBUG_LEVEL=4
+CONFIG_NIMBLE_LOG_LEVEL=4
+
+# OpenThread Logging (already configured but ensure it's verbose)
+CONFIG_OPENTHREAD_LOG_LEVEL_DEBG=y
+
+# Arduino Core Debug Level
+CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL_DEBUG=y
+CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL=4
