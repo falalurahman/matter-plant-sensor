@@ -30,7 +30,7 @@
 #define ICD_WAKE_INTERVAL_S 3600  // 1 hour; mirrors CONFIG_ICD_IDLE_MODE_INTERVAL_SEC
 #endif
 #ifndef COMMISSIONING_GRACE_MS
-#define COMMISSIONING_GRACE_MS 300000  // 5 min stay-awake after first commissioning
+#define COMMISSIONING_GRACE_MS 30000  // 10s stay-awake after first commissioning
 #endif
 
 // ─── Hardware constants ──────────────────────────────────────────────────────
@@ -70,6 +70,8 @@ static MatterSoilSensor     gSoilSensor;
 enum class State : uint8_t {
     SYSTEM_BOOT,
     MATTER_READY,
+    MATTER_DECOMMISSIONED,   // wait for BLE commission + Thread join
+    COMMISSIONING_GRACE,     // idle hold so controller can finish setup
     IDLE_WAIT,
     SENSOR_READ,
     DATA_PUSH,
@@ -92,7 +94,6 @@ static uint32_t gButtonPressedAt  = 0;
 static uint32_t gIdleStart       = 0;
 static uint32_t gBH1750Start     = 0;
 static bool     gBH1750Armed     = false;
-static uint32_t gStayAwakeUntil  = 0;  // millis() deadline for post-commissioning grace
 
 // ─── RTC state (survives light sleep) ────────────────────────────────────────
 RTC_DATA_ATTR static uint32_t gBootCount = 0;
@@ -203,6 +204,7 @@ void setup() {
 }
 
 void loop() {
+    checkDecommissionButton();
     switch (gState) {
 
     // ── SYSTEM_BOOT ──────────────────────────────────────────────────────────
@@ -242,9 +244,23 @@ void loop() {
     }
 
     // ── MATTER_READY ─────────────────────────────────────────────────────────
+    // Visited once on fresh boot only (light-sleep wakeup goes IDLE_WAIT directly).
+    // If already commissioned (power-cycle of provisioned device) → skip grace.
     case State::MATTER_READY: {
-        checkDecommissionButton();
+        if (MatterCustomNode::isCommissioned()) {
+            Serial.println("Already commissioned — going directly to sensor cycle.");
+            gIdleStart = millis();
+            gState = State::IDLE_WAIT;
+        } else {
+            gState = State::MATTER_DECOMMISSIONED;
+        }
+        break;
+    }
 
+    // ── MATTER_DECOMMISSIONED ────────────────────────────────────────────────
+    // Wait for BLE commissioning then Thread network join.
+    // Once both are satisfied, enter the post-commissioning grace period.
+    case State::MATTER_DECOMMISSIONED: {
         if (!MatterCustomNode::isCommissioned()) {
             static uint32_t lastPrint = 0;
             if (millis() - lastPrint >= 10000) {
@@ -253,7 +269,7 @@ void loop() {
                 Serial.printf("  Setup discriminator : %d\n", MATTER_DEVICE_SETUP_DISCRIMINATOR);
                 Serial.printf("  Setup passcode      : %lu\n", (unsigned long)MATTER_DEVICE_SETUP_PASSCODE);
             }
-            break;  // stay in MATTER_READY
+            break;
         }
 
         if (!MatterCustomNode::isConnected()) {
@@ -262,36 +278,54 @@ void loop() {
                 lastPrint = millis();
                 Serial.println("Waiting for Thread network connection…");
             }
-            break;  // stay in MATTER_READY
+            break;
         }
 
-        // One-time grace period after fresh commissioning.  The device sits idle
-        // here so Apple Home (and other controllers) can complete subscriptions,
-        // attribute reads, and ICD registration without the device going to sleep.
-        // graceGiven is a plain static (not RTC) — it resets after esp_restart(),
-        // which the decommission handler calls, so re-commissioning always gets
-        // the full grace period.  Light sleep preserves RAM, so on wakeup
-        // graceGiven stays true and the grace does NOT re-trigger.
-        static bool graceGiven = false;
-        if (!graceGiven && MatterCustomNode::getAndClearJustCommissioned()) {
-            gStayAwakeUntil = millis() + COMMISSIONING_GRACE_MS;
-            graceGiven = true;
+        gState = State::COMMISSIONING_GRACE;
+        break;
+    }
+
+    // ── COMMISSIONING_GRACE ──────────────────────────────────────────────────
+    // Sit idle so the Matter controller (e.g. Apple Home) can complete attribute
+    // reads, subscriptions, and ICD registration before we start the sensor cycle.
+    case State::COMMISSIONING_GRACE: {
+        static uint32_t graceEnteredAt = 0;
+        static uint32_t stayAwakeUntil = 0;
+
+        if (graceEnteredAt == 0) graceEnteredAt = millis();
+
+        // Arm the 5-minute timer once kCommissioningComplete fires.
+        if (stayAwakeUntil == 0 && MatterCustomNode::getAndClearJustCommissioned()) {
+            stayAwakeUntil = millis() + COMMISSIONING_GRACE_MS;
             Serial.printf("Commissioning done — holding awake for %u s\n",
                           COMMISSIONING_GRACE_MS / 1000);
         }
-        if (gStayAwakeUntil > 0 && millis() < gStayAwakeUntil) {
+
+        // Safety fallback: if the event never fires within 10 s, skip grace.
+        if (stayAwakeUntil == 0 && (millis() - graceEnteredAt >= 10000)) {
+            Serial.println("No commissioning event within 10 s — skipping grace.");
+            stayAwakeUntil = 1;  // sentinel: grace not needed
+        }
+
+        // Stay idle while the grace timer is running.
+        if (stayAwakeUntil > 1 && millis() < stayAwakeUntil) {
             static uint32_t lastGraceLog = 0;
             if (millis() - lastGraceLog >= 15000) {
                 lastGraceLog = millis();
                 Serial.printf("  Grace: %lu s remaining...\n",
-                              (gStayAwakeUntil - millis()) / 1000);
+                              (stayAwakeUntil - millis()) / 1000);
             }
-            break;  // Stay in MATTER_READY, do nothing
+            break;
         }
 
-        Serial.println("Matter commissioned and Thread connected.");
-        gIdleStart = millis();
-        gState     = State::IDLE_WAIT;
+        // Grace expired (or skipped) — start sensor cycle.
+        if (stayAwakeUntil > 0) {
+            graceEnteredAt = 0;
+            stayAwakeUntil = 0;
+            Serial.println("Grace complete — starting sensor cycle.");
+            gIdleStart = millis();
+            gState = State::IDLE_WAIT;
+        }
         break;
     }
 
@@ -314,8 +348,6 @@ void loop() {
 
     // ── SENSOR_READ ──────────────────────────────────────────────────────────
     case State::SENSOR_READ: {
-        checkDecommissionButton();
-
         // Wait for BH1750 conversion to finish (~180 ms).
         if (gBH1750Armed && (millis() - gBH1750Start < BH1750_MEAS_MS)) break;
         gBH1750Armed = false;
@@ -375,7 +407,7 @@ void loop() {
         // Allow the Matter stack a moment to dispatch the updates.
         delay(1000);
 
-        gState = State::IDLE_WAIT;
+        gState = State::POWER_SAVE;
         break;
     }
 
@@ -383,20 +415,20 @@ void loop() {
     // Enter light sleep.  The OpenThread SED stack wakes automatically every
     // CONFIG_ICD_SLOW_POLL_INTERVAL_MS to maintain the Thread parent link.
     // Our timer wakeup fires after ICD_WAKE_INTERVAL_S for the next reading.
-    // case State::POWER_SAVE: {
-    //     Serial.printf("Entering light sleep for %d s…\n", ICD_WAKE_INTERVAL_S);
-    //     Serial.flush();
+    case State::POWER_SAVE: {
+        Serial.printf("Entering light sleep for %d s…\n", ICD_WAKE_INTERVAL_S);
+        Serial.flush();
 
-    //     esp_sleep_enable_timer_wakeup(
-    //         static_cast<uint64_t>(ICD_WAKE_INTERVAL_S) * 1000000ULL);
-    //     esp_light_sleep_start();
+        esp_sleep_enable_timer_wakeup(
+            static_cast<uint64_t>(ICD_WAKE_INTERVAL_S) * 1000000ULL);
+        esp_light_sleep_start();
 
-    //     // Execution resumes here after wakeup.
-    //     Serial.println("Woke from light sleep.");
-    //     gIdleStart = millis();
-    //     gState     = State::IDLE_WAIT;
-    //     break;
-    // }
+        // Execution resumes here after wakeup.
+        Serial.println("Woke from light sleep.");
+        gIdleStart = millis();
+        gState     = State::IDLE_WAIT;
+        break;
+    }
 
     }  // end switch
 }

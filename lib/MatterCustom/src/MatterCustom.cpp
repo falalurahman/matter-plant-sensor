@@ -26,10 +26,21 @@ void MatterCustomNode::eventCB(const ChipDeviceEvent *event, intptr_t /*arg*/) {
             log_i("Matter commissioning complete");
             _justCommissioned = true;
             break;
-        case chip::DeviceLayer::DeviceEventType::kFabricRemoved:
-            log_i("Fabric removed");
-            if (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
-                log_i("No fabrics left, re-opening commissioning window");
+        case chip::DeviceLayer::DeviceEventType::kFabricRemoved: {
+            const chip::FabricTable & ft = chip::Server::GetInstance().GetFabricTable();
+            uint8_t remaining = ft.FabricCount();
+            log_i("Fabric removed — %u fabric(s) remaining:", remaining);
+            uint8_t nonApple = 0;
+            for (const chip::FabricInfo & fabric : ft) {
+                log_i("  idx=%u FabricId=0x%016llx NodeId=0x%016llx VendorId=0x%04x",
+                      (unsigned)fabric.GetFabricIndex(),
+                      (unsigned long long)fabric.GetFabricId(),
+                      (unsigned long long)fabric.GetNodeId(),
+                      (unsigned)fabric.GetVendorId());
+                if (fabric.GetVendorId() != chip::VendorId(0x1384)) nonApple++;
+            }
+            if (nonApple == 0) {
+                log_i("No non-Apple fabrics left — re-opening commissioning window");
                 chip::CommissioningWindowManager &mgr =
                     chip::Server::GetInstance().GetCommissioningWindowManager();
                 constexpr auto kTimeout = chip::System::Clock::Seconds16(300);
@@ -39,6 +50,7 @@ void MatterCustomNode::eventCB(const ChipDeviceEvent *event, intptr_t /*arg*/) {
                 }
             }
             break;
+        }
         case chip::DeviceLayer::DeviceEventType::kBLEDeinitialized:
             log_d("BLE deinitialized, memory reclaimed");
             break;
