@@ -11,6 +11,7 @@
 #include <esp_matter.h>
 #include <MatterEndPoint.h>
 #include <app/ReadHandler.h>
+#include <app/icd/server/ICDStateObserver.h>
 #include <atomic>
 
 #if CONFIG_ENABLE_MATTER_OVER_THREAD
@@ -78,6 +79,10 @@ public:
         uint16_t endpoint_id, uint8_t effect_id, uint8_t effect_variant,
         void *priv_data);
 
+    // Returns true once OnEnterIdleMode() has fired.
+    // Set on the CHIP task thread; read safely via atomic load on the Arduino loop thread.
+    static bool isIcdIdle() { return _icdIdleReady.load(); }
+
 private:
     static bool _initialized;
     static bool _started;
@@ -85,6 +90,17 @@ private:
     static volatile bool _justCommissioned;
 
     static void eventCB(const ChipDeviceEvent *event, intptr_t arg);
+
+    // ── ICD mode observer ────────────────────────────────────────────────────
+    // Implements ICDStateObserver to detect when the ICD enters idle mode.
+    // OnEnterIdleMode() signals it is safe to enter deep sleep.
+    class ICDObserver : public chip::app::ICDStateObserver {
+    public:
+        void OnEnterActiveMode()  override;
+        void OnEnterIdleMode()    override;
+        void OnTransitionToIdle() override {}
+        void OnICDModeChange()    override {}
+    };
 
     // ── Subscription lifecycle tracker ───────────────────────────────────────
     // Implements ReadHandler::ApplicationCallback to count active subscriptions.
@@ -103,7 +119,9 @@ private:
         std::atomic<int> _count{0};
     };
 
-    static SubscriptionTracker  _subTracker;
+    static ICDObserver           _icdObserver;
+    static std::atomic<bool>     _icdIdleReady;
+    static SubscriptionTracker   _subTracker;
     static std::atomic<uint32_t> _sDirtyCount;
 
     // Runs on the CHIP task thread to safely read GetNumDirtySubscriptions().
