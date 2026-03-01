@@ -200,9 +200,15 @@ bool MatterCustomNode::start() {
 
     // Register ICD state observer to detect ActiveMode → IdleMode transitions.
     // OnEnterIdleMode() sets _icdIdleReady = true, gating deep sleep in POWER_SAVE.
+    // NOTE: Server.cpp fills both default pool slots (mReportScheduler + DnssdServer)
+    // before calling Init(). CHIP_CONFIG_ICD_OBSERVERS_POOL_SIZE must be ≥ 3.
     _icdIdleReady.store(false);
-    chip::Server::GetInstance().GetICDManager().RegisterObserver(&_icdObserver);
-    log_i("MatterCustom: ICDObserver registered");
+    auto *icdObs = chip::Server::GetInstance().GetICDManager().RegisterObserver(&_icdObserver);
+    if (icdObs == nullptr) {
+        log_e("MatterCustom: ICDObserver registration FAILED — pool full (increase CHIP_CONFIG_ICD_OBSERVERS_POOL_SIZE)");
+    } else {
+        log_i("MatterCustom: ICDObserver registered");
+    }
 
     return true;
 }
