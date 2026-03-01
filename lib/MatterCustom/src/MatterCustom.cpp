@@ -139,7 +139,11 @@ bool MatterCustomNode::init() {
             nullable<uint8_t> initPct(200);  // start at 100% (200 = 100% in half-percent units)
             nullable<uint8_t> nullVal;
             esp_matter::cluster::power_source::attribute::create_bat_percent_remaining(ps_cluster, initPct, nullVal, nullVal);
-            log_i("MatterCustom: PowerSource cluster + BatPercentRemaining added to EP0");
+
+            nullable<uint32_t> initVoltage;  // null = reading not yet available (avoids 0mV constraint error)
+            nullable<uint32_t> nullVoltage;
+            esp_matter::cluster::power_source::attribute::create_bat_voltage(ps_cluster, initVoltage, nullVoltage, nullVoltage);
+            log_i("MatterCustom: PowerSource cluster + BatPercentRemaining + BatVoltage added to EP0");
         }
     }
 
@@ -240,9 +244,9 @@ bool MatterCustomNode::setBatteryPercent(uint8_t percent) {
     uint8_t raw = percent * 2;
 
     esp_matter_attr_val_t val = esp_matter_invalid(NULL);
-    // PowerSource cluster 0x002F, BatPercentRemaining attribute 0x000E
+    // PowerSource cluster 0x002F, BatPercentRemaining attribute 0x000C
     constexpr uint32_t kPowerSourceCluster = 0x002F;
-    constexpr uint32_t kBatPercentAttr     = 0x000E;
+    constexpr uint32_t kBatPercentAttr     = 0x000C;
 
     endpoint_t *root_ep = endpoint::get(_node, 0);
     if (!root_ep) return false;
@@ -255,7 +259,36 @@ bool MatterCustomNode::setBatteryPercent(uint8_t percent) {
 
     attribute::get_val(attr, &val);
     val.val.u8 = raw;
-    return attribute::update(0, kPowerSourceCluster, kBatPercentAttr, &val) == ESP_OK;
+    if (attribute::update(0, kPowerSourceCluster, kBatPercentAttr, &val) != ESP_OK) return false;
+
+    // Also update BatChargeLevel so Apple Home shows the correct battery indicator.
+    // BatChargeLevelEnum: 0=OK, 1=Warning, 2=Critical
+    constexpr uint32_t kBatChargeLevelAttr = 0x000E;
+    uint8_t chargeLevel = (percent > 33) ? 0 : (percent > 10) ? 1 : 2;
+    attribute_t *lvlAttr = attribute::get(ps_cluster, kBatChargeLevelAttr);
+    if (lvlAttr) {
+        esp_matter_attr_val_t lvlVal = esp_matter_invalid(NULL);
+        attribute::get_val(lvlAttr, &lvlVal);
+        lvlVal.val.u8 = chargeLevel;
+        attribute::update(0, kPowerSourceCluster, kBatChargeLevelAttr, &lvlVal);
+    }
+    return true;
+}
+
+// ── Battery voltage update ───────────────────────────────────────────────────
+bool MatterCustomNode::setBatteryVoltage(uint32_t mv) {
+    if (!_started) return false;
+    constexpr uint32_t kPowerSourceCluster = 0x002F;
+    constexpr uint32_t kBatVoltageAttr     = 0x000B;
+    endpoint_t *root_ep = endpoint::get(_node, 0);
+    if (!root_ep) return false;
+    cluster_t *ps_cluster = cluster::get(root_ep, kPowerSourceCluster);
+    if (!ps_cluster) return false;
+    attribute_t *attr = attribute::get(ps_cluster, kBatVoltageAttr);
+    if (!attr) return false;
+    nullable<uint32_t> voltageVal(mv);
+    esp_matter_attr_val_t val = esp_matter_nullable_uint32(voltageVal);
+    return attribute::update(0, kPowerSourceCluster, kBatVoltageAttr, &val) == ESP_OK;
 }
 
 // ── SubscriptionTracker callbacks ────────────────────────────────────────────

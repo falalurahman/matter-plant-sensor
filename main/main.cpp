@@ -91,7 +91,8 @@ static double  gTempC        = 0.0;
 static double  gHumidityPct  = 0.0;
 static float   gLux          = 0.0f;
 static double  gSoilPct      = 0.0;
-static uint8_t gBatteryPct   = 0;
+static uint8_t  gBatteryPct   = 0;
+static uint32_t gBatteryMv    = 0;   // actual Vbat in mV (ADC × 2, 1:1 divider)
 
 // ─── Timing ──────────────────────────────────────────────────────────────────
 static uint32_t gWakeStartMs     = 0;  // millis() at start of setup() for cycle time logging
@@ -106,7 +107,8 @@ static double  gTempReadings[3]    = {};
 static double  gHumReadings[3]     = {};
 static float   gLuxReadings[3]     = {};
 static double  gSoilReadings[3]    = {};
-static uint8_t gBatReadings[3]     = {};
+static uint8_t  gBatReadings[3]    = {};
+static uint32_t gBatMvReadings[3]  = {};
 
 // ─── RTC state (survives deep sleep) ─────────────────────────────────────────
 RTC_DATA_ATTR static uint32_t               gBootCount  = 0;
@@ -177,6 +179,7 @@ static uint8_t readBatteryPercent() {
     uint16_t raw = analogRead(PIN_BATTERY_ADC);
     float adc_mv  = raw * ADC_FULL_MV / 4095.0f;
     float vbat_mv = adc_mv * 2.0f;  // 1:1 divider → actual Vbat = 2× ADC voltage
+    gBatteryMv = static_cast<uint32_t>(vbat_mv);  // store for BatVoltage attribute
     float pct = (vbat_mv - VBAT_MIN_MV) / (VBAT_MAX_MV - VBAT_MIN_MV) * 100.0f;
     return static_cast<uint8_t>(constrain(pct, 0.0f, 100.0f));
 }
@@ -437,8 +440,9 @@ void loop() {
             gLuxReadings[gReadCount] = gLux;
         }
         
-        gSoilReadings[gReadCount] = readSoilMoisture();
-        gBatReadings[gReadCount]  = readBatteryPercent();
+        gSoilReadings[gReadCount]  = readSoilMoisture();
+        gBatReadings[gReadCount]   = readBatteryPercent();  // also sets gBatteryMv
+        gBatMvReadings[gReadCount] = gBatteryMv;
 
         gReadCount++;
 
@@ -453,7 +457,8 @@ void loop() {
             gHumidityPct = median3(gHumReadings[0],  gHumReadings[1],  gHumReadings[2]);
             gLux         = median3(gLuxReadings[0],  gLuxReadings[1],  gLuxReadings[2]);
             gSoilPct     = median3(gSoilReadings[0], gSoilReadings[1], gSoilReadings[2]);
-            gBatteryPct  = median3(gBatReadings[0],  gBatReadings[1],  gBatReadings[2]);
+            gBatteryPct  = median3(gBatReadings[0],   gBatReadings[1],   gBatReadings[2]);
+            gBatteryMv   = median3(gBatMvReadings[0], gBatMvReadings[1], gBatMvReadings[2]);
             log_i("Sensors (median/3) → T=%.2f°C  RH=%.1f%%  Lux=%.1f  Soil=%.1f%%  Bat=%u%%",
                   gTempC, gHumidityPct, gLux, gSoilPct, gBatteryPct);
             gState = State::DATA_PUSH;
@@ -500,6 +505,7 @@ void loop() {
         }
         if (abs((int)gBatteryPct - (int)lastBat) >= BATTERY_THRESHOLD) {
             MatterCustomNode::setBatteryPercent(gBatteryPct);
+            MatterCustomNode::setBatteryVoltage(gBatteryMv);
             lastBat = gBatteryPct;
         }
 
