@@ -124,7 +124,7 @@ static bool sht4xRead(double &tempC, double &humPct) {
     Wire.write(0xFD);  // Measure T+RH, high precision
     if (Wire.endTransmission() != 0) return false;
 
-    delay(10);  // SHT4x high-precision measurement time ≤ 8.3 ms
+    delay(15);  // SHT4x high-precision: 8.3 ms typical; 15 ms gives margin
 
     if (Wire.requestFrom(static_cast<uint8_t>(I2C_ADDR_SHT4X), static_cast<uint8_t>(6)) != 6)
         return false;
@@ -141,15 +141,11 @@ static bool sht4xRead(double &tempC, double &humPct) {
 }
 
 // ── BH1750 ───────────────────────────────────────────────────────────────────
-// Send the "Power On" + "Continuous High-Resolution Mode 2" commands.
-// Must be called once during init; measurements start automatically.
+// Send the "Power On" command.  Measurements are triggered on-demand via
+// bh1750Trigger() (One-Time High-Resolution Mode 2, 0x21).
 static void bh1750Init() {
     Wire.beginTransmission(I2C_ADDR_BH1750);
     Wire.write(0x01);  // Power On
-    Wire.endTransmission();
-    delay(1);
-    Wire.beginTransmission(I2C_ADDR_BH1750);
-    Wire.write(0x11);  // Continuous High-Resolution Mode 2 (0.5 lx, 120 ms typ)
     Wire.endTransmission();
 }
 
@@ -246,6 +242,7 @@ void loop() {
 
         // I2C
         Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+        Wire.setClock(100000);  // 100 kHz standard mode — explicit, deterministic for both sensors
         bh1750Init();
         delay(200);  // BH1750 first measurement settling
 
@@ -426,16 +423,18 @@ void loop() {
         if (gBH1750Armed && (millis() - gBH1750Start < BH1750_MEAS_MS)) break;
         gBH1750Armed = false;
 
-        if (!bh1750Read(gLuxReadings[gReadCount])) {
-            log_w("BH1750 read failed at sample %u — using previous value", gReadCount);
-            gLuxReadings[gReadCount] = gLux;
-        }
-
-        // Read all sensors into per-sample arrays at index gReadCount.
+        // SHT4x read first: its WRITE command is first on the bus each sub-cycle (clean bus).
+        // BH1750 READ follows SHT4x READ — READ→READ transition is always clean.
+        // (Reversed order fixes READ→WRITE back-to-back stall on ESP32-H2 Wire.)
         if (!sht4xRead(gTempReadings[gReadCount], gHumReadings[gReadCount])) {
             log_w("SHT4x read failed at sample %u — using previous values", gReadCount);
             gTempReadings[gReadCount] = gTempC;
             gHumReadings[gReadCount]  = gHumidityPct;
+        }
+
+        if (!bh1750Read(gLuxReadings[gReadCount])) {
+            log_w("BH1750 read failed at sample %u — using previous value", gReadCount);
+            gLuxReadings[gReadCount] = gLux;
         }
         
         gSoilReadings[gReadCount] = readSoilMoisture();
