@@ -7,6 +7,7 @@
 // Hardware (ESP32-H2 SuperMini):
 //   GPIO 1 (ADC1_CH0) — capacitive soil-moisture sensor
 //   GPIO 2 (ADC1_CH1) — battery voltage via 1:1 resistor divider
+//   GPIO 3            — NPN transistor base (HIGH = sensors powered on)
 //   GPIO 4 (SDA) / GPIO 5 (SCL) — I2C bus
 //     0x44 — SHT4x  (ambient temperature + humidity)
 //     0x23 — BH1750 (ambient light, lux)
@@ -38,9 +39,10 @@
 #endif
 
 // ─── Hardware constants ──────────────────────────────────────────────────────
-static constexpr uint8_t  PIN_BATTERY_ADC  = 2;
-static constexpr uint8_t  PIN_I2C_SDA      = 4;
-static constexpr uint8_t  PIN_I2C_SCL      = 5;
+static constexpr uint8_t     PIN_BATTERY_ADC  = 2;
+static constexpr gpio_num_t  PIN_SENSOR_PWR   = GPIO_NUM_3;  // NPN base — HIGH=sensors on
+static constexpr uint8_t     PIN_I2C_SDA      = 4;
+static constexpr uint8_t     PIN_I2C_SCL      = 5;
 static constexpr uint8_t  I2C_ADDR_SHT4X   = 0x44;
 static constexpr uint8_t  I2C_ADDR_BH1750  = 0x23;
 
@@ -92,9 +94,19 @@ static double  gSoilPct      = 0.0;
 static uint8_t gBatteryPct   = 0;
 
 // ─── Timing ──────────────────────────────────────────────────────────────────
+static uint32_t gWakeStartMs     = 0;  // millis() at start of setup() for cycle time logging
+static uint32_t gSensorPowerOnMs = 0;  // millis() when sensor power GPIO went HIGH
 static uint32_t gIdleStart       = 0;
 static uint32_t gBH1750Start     = 0;
 static bool     gBH1750Armed     = false;
+
+// ─── Sensor sampling (3× median) ─────────────────────────────────────────────
+static uint8_t gReadCount          = 0;
+static double  gTempReadings[3]    = {};
+static double  gHumReadings[3]     = {};
+static float   gLuxReadings[3]     = {};
+static double  gSoilReadings[3]    = {};
+static uint8_t gBatReadings[3]     = {};
 
 // ─── RTC state (survives deep sleep) ─────────────────────────────────────────
 RTC_DATA_ATTR static uint32_t               gBootCount  = 0;
@@ -174,10 +186,31 @@ static uint8_t readBatteryPercent() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// ── Utility ──────────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+
+// Return the median of three values (sort-based, no heap allocation).
+template <typename T>
+static T median3(T a, T b, T c) {
+    if (a > b) { T t = a; a = b; b = t; }
+    if (b > c) { T t = b; b = c; c = t; }
+    if (a > b) { T t = a; a = b; b = t; }
+    return b;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // ── Arduino entry points ─────────────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════════════════
 
 void setup() {
+    gWakeStartMs = millis();  // Record wake time for end-of-cycle log
+
+    // Power on sensors immediately via NPN transistor on GPIO 3.
+    // Sensors stabilize while the Matter stack initializes below (~3–10 s).
+    pinMode(PIN_SENSOR_PWR, OUTPUT);
+    digitalWrite(PIN_SENSOR_PWR, HIGH);
+    gSensorPowerOnMs = millis();
+
     Serial.begin(115200);
     gBootCount++;
     Serial.printf("\n=== Plant Sensor boot #%lu ===\n", gBootCount);
@@ -370,45 +403,60 @@ void loop() {
     }
 
     // ── IDLE_WAIT ────────────────────────────────────────────────────────────
-    // Short active-wait so the Matter stack can process any queued messages
-    // before we enter sensor reading.  Uses millis() — non-blocking.
+    // Ensures at least 1 s of sensor power-on time has elapsed before reading.
+    // In practice Matter init + Thread rejoin takes >3 s so this is a safety
+    // floor rather than a real delay.  Uses millis() — non-blocking.
     case State::IDLE_WAIT: {
-
-        // On first boot give the stack 2 s to settle after commissioning/join.
-        if (millis() - gIdleStart >= 2000) {
-            gState = State::SENSOR_READ;
-            // Arm BH1750 one-shot measurement
+        if (millis() - gSensorPowerOnMs >= 1000) {
+            gReadCount = 0;
+            // Arm BH1750 first one-shot measurement
             bh1750Trigger();
             gBH1750Start = millis();
             gBH1750Armed = true;
+            gState = State::SENSOR_READ;
         }
         break;
     }
 
     // ── SENSOR_READ ──────────────────────────────────────────────────────────
+    // Collects 3 readings from every sensor; reports the median of each.
+    // BH1750 needs 180 ms per one-shot — total extra latency ≈ 360 ms.
     case State::SENSOR_READ: {
-        // Wait for BH1750 conversion to finish (~180 ms).
+        // Wait for current BH1750 conversion to finish (~180 ms).
         if (gBH1750Armed && (millis() - gBH1750Start < BH1750_MEAS_MS)) break;
         gBH1750Armed = false;
 
-        // Read SHT4x (blocking, ~10 ms).
-        if (!sht4xRead(gTempC, gHumidityPct)) {
-            log_w("SHT4x read failed — using previous values");
+        // Read all sensors into per-sample arrays at index gReadCount.
+        if (!sht4xRead(gTempReadings[gReadCount], gHumReadings[gReadCount])) {
+            log_w("SHT4x read failed at sample %u — using previous values", gReadCount);
+            gTempReadings[gReadCount] = gTempC;
+            gHumReadings[gReadCount]  = gHumidityPct;
         }
-
-        // Read BH1750.
-        if (!bh1750Read(gLux)) {
-            log_w("BH1750 read failed — using previous value");
+        if (!bh1750Read(gLuxReadings[gReadCount])) {
+            log_w("BH1750 read failed at sample %u — using previous value", gReadCount);
+            gLuxReadings[gReadCount] = gLux;
         }
+        gSoilReadings[gReadCount] = readSoilMoisture();
+        gBatReadings[gReadCount]  = readBatteryPercent();
 
-        // Read ADC sensors.
-        gSoilPct    = readSoilMoisture();
-        gBatteryPct = readBatteryPercent();
+        gReadCount++;
 
-        Serial.printf("Sensors → T=%.2f°C  RH=%.1f%%  Lux=%.1f  Soil=%.1f%%  Bat=%u%%\n",
-                      gTempC, gHumidityPct, gLux, gSoilPct, gBatteryPct);
-
-        gState = State::DATA_PUSH;
+        if (gReadCount < 3) {
+            // Trigger next BH1750 one-shot and stay in SENSOR_READ.
+            bh1750Trigger();
+            gBH1750Start = millis();
+            gBH1750Armed = true;
+        } else {
+            // All 3 samples collected — compute medians.
+            gTempC       = median3(gTempReadings[0], gTempReadings[1], gTempReadings[2]);
+            gHumidityPct = median3(gHumReadings[0],  gHumReadings[1],  gHumReadings[2]);
+            gLux         = median3(gLuxReadings[0],  gLuxReadings[1],  gLuxReadings[2]);
+            gSoilPct     = median3(gSoilReadings[0], gSoilReadings[1], gSoilReadings[2]);
+            gBatteryPct  = median3(gBatReadings[0],  gBatReadings[1],  gBatReadings[2]);
+            log_i("Sensors (median/3) → T=%.2f°C  RH=%.1f%%  Lux=%.1f  Soil=%.1f%%  Bat=%u%%",
+                  gTempC, gHumidityPct, gLux, gSoilPct, gBatteryPct);
+            gState = State::DATA_PUSH;
+        }
         break;
     }
 
@@ -499,7 +547,11 @@ void loop() {
         }
         icdWaitStart = 0;  // reset so next wakeup cycle starts fresh
 
-        Serial.printf("Entering deep sleep for %d s…\n", ICD_WAKE_INTERVAL_S);
+        // Power off sensors before entering deep sleep.
+        digitalWrite(PIN_SENSOR_PWR, LOW);
+
+        Serial.printf("Cycle complete — active for %lu ms. Entering deep sleep for %d s…\n",
+              millis() - gWakeStartMs, ICD_WAKE_INTERVAL_S);
         Serial.flush();
         delay(100);  // drain UART TX buffer before power-down
 
@@ -507,7 +559,7 @@ void loop() {
             static_cast<uint64_t>(ICD_WAKE_INTERVAL_S) * 1000000ULL);
         // gpio_wakeup_enable is light-sleep only; use EXT1 for deep sleep.
         esp_sleep_enable_ext1_wakeup(1ULL << ACTION_BUTTON_PIN,
-                                     ESP_EXT1_WAKEUP_ALL_LOW);
+                                     ESP_EXT1_WAKEUP_ANY_LOW);
         esp_deep_sleep_start();
         // Does not return — next execution begins in setup() on wakeup.
         break;
