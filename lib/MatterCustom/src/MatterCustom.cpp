@@ -20,8 +20,21 @@ bool MatterCustomNode::_initialized      = false;
 bool MatterCustomNode::_started          = false;
 esp_matter::node_t *MatterCustomNode::_node = nullptr;
 volatile bool MatterCustomNode::_justCommissioned = false;
+MatterCustomNode::ICDObserver          MatterCustomNode::_icdObserver;
+std::atomic<bool>                      MatterCustomNode::_icdIdleReady{false};
 MatterCustomNode::SubscriptionTracker  MatterCustomNode::_subTracker;
 std::atomic<uint32_t> MatterCustomNode::_sDirtyCount{0};
+
+// ── ICDObserver callbacks ────────────────────────────────────────────────────
+void MatterCustomNode::ICDObserver::OnEnterActiveMode() {
+    _icdIdleReady.store(false);
+    log_i("MatterCustom: ICD → ActiveMode");
+}
+
+void MatterCustomNode::ICDObserver::OnEnterIdleMode() {
+    _icdIdleReady.store(true);
+    log_i("MatterCustom: ICD → IdleMode — safe to sleep");
+}
 
 // ── Event callback ───────────────────────────────────────────────────────────
 void MatterCustomNode::eventCB(const ChipDeviceEvent *event, intptr_t /*arg*/) {
@@ -184,6 +197,13 @@ bool MatterCustomNode::start() {
     chip::app::InteractionModelEngine::GetInstance()
         ->RegisterReadHandlerAppCallback(&_subTracker);
     log_i("MatterCustom: SubscriptionTracker registered");
+
+    // Register ICD state observer to detect ActiveMode → IdleMode transitions.
+    // OnEnterIdleMode() sets _icdIdleReady = true, gating deep sleep in POWER_SAVE.
+    _icdIdleReady.store(false);
+    chip::Server::GetInstance().GetICDManager().RegisterObserver(&_icdObserver);
+    log_i("MatterCustom: ICDObserver registered");
+
     return true;
 }
 

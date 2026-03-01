@@ -478,6 +478,27 @@ void loop() {
             break;
         }
 
+        // Wait for the ICD to transition from ActiveMode to IdleMode before sleeping.
+        // After DATA_PUSH drains all attribute reports, the ICD active-mode timer
+        // counts down and fires OnEnterIdleMode() — typically within a few seconds.
+        // Cap at 30 s to avoid hanging if the callback is never received.
+        static uint32_t icdWaitStart = 0;
+        if (icdWaitStart == 0) icdWaitStart = millis();
+
+        if (!MatterCustomNode::isIcdIdle()) {
+            static uint32_t lastIcdLog = 0;
+            if (millis() - lastIcdLog >= 5000) {
+                lastIcdLog = millis();
+                log_i("POWER_SAVE: waiting for ICD idle... (%lu s)",
+                      (millis() - icdWaitStart) / 1000);
+            }
+            if (millis() - icdWaitStart < 30000) break;  // yield — check next loop
+            log_w("POWER_SAVE: ICD idle timeout — sleeping anyway");
+        } else {
+            Serial.println("ICD idle — entering deep sleep.");
+        }
+        icdWaitStart = 0;  // reset so next wakeup cycle starts fresh
+
         Serial.printf("Entering deep sleep for %d s…\n", ICD_WAKE_INTERVAL_S);
         Serial.flush();
         delay(100);  // drain UART TX buffer before power-down
