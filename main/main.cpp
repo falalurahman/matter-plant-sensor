@@ -426,16 +426,18 @@ void loop() {
         if (gBH1750Armed && (millis() - gBH1750Start < BH1750_MEAS_MS)) break;
         gBH1750Armed = false;
 
+        if (!bh1750Read(gLuxReadings[gReadCount])) {
+            log_w("BH1750 read failed at sample %u — using previous value", gReadCount);
+            gLuxReadings[gReadCount] = gLux;
+        }
+
         // Read all sensors into per-sample arrays at index gReadCount.
         if (!sht4xRead(gTempReadings[gReadCount], gHumReadings[gReadCount])) {
             log_w("SHT4x read failed at sample %u — using previous values", gReadCount);
             gTempReadings[gReadCount] = gTempC;
             gHumReadings[gReadCount]  = gHumidityPct;
         }
-        if (!bh1750Read(gLuxReadings[gReadCount])) {
-            log_w("BH1750 read failed at sample %u — using previous value", gReadCount);
-            gLuxReadings[gReadCount] = gLux;
-        }
+        
         gSoilReadings[gReadCount] = readSoilMoisture();
         gBatReadings[gReadCount]  = readBatteryPercent();
 
