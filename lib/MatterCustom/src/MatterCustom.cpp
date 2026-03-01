@@ -131,16 +131,18 @@ bool MatterCustomNode::init() {
     }
 
     // Add ICD Management cluster to EP0 — required for LIT ICD.
-    // Exposes IdleModeDuration, ActiveModeDuration, RegisteredClients to controllers.
-    // Timing values come from CONFIG_ICD_* sdkconfig entries.
+    // Feature bits must match enabled sdkconfig options; mirrors esp_matter_endpoint.cpp:83-93.
     if (root_ep) {
         icd_management::config_t icd_cfg{};
         cluster_t *icd_cluster = icd_management::create(
-            root_ep, &icd_cfg, CLUSTER_FLAG_SERVER, 0);
+            root_ep, &icd_cfg, CLUSTER_FLAG_SERVER,
+            icd_management::feature::long_idle_time_support::get_id() |
+            icd_management::feature::check_in_protocol_support::get_id() |
+            0);
         if (icd_cluster == nullptr) {
             log_w("MatterCustom: failed to create ICD Management cluster on EP0");
         } else {
-            log_i("MatterCustom: ICD Management cluster added to EP0");
+            log_i("MatterCustom: ICD Management cluster added to EP0 (LIT+CIP features)");
         }
     }
 
