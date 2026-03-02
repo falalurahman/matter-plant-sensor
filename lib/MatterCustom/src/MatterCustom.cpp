@@ -136,13 +136,8 @@ bool MatterCustomNode::init() {
         } else {
             // BatPercentRemaining is optional and not added by the battery feature automatically.
             // Add it explicitly so we can report remaining capacity (Matter range: 0–200).
-            nullable<uint8_t> initPct(200);  // start at 100% (200 = 100% in half-percent units)
-            nullable<uint8_t> nullVal;
-            esp_matter::cluster::power_source::attribute::create_bat_percent_remaining(ps_cluster, initPct, nullVal, nullVal);
-
-            nullable<uint32_t> initVoltage;  // null = reading not yet available (avoids 0mV constraint error)
-            nullable<uint32_t> nullVoltage;
-            esp_matter::cluster::power_source::attribute::create_bat_voltage(ps_cluster, initVoltage, nullVoltage, nullVoltage);
+            esp_matter::cluster::power_source::attribute::create_bat_percent_remaining(ps_cluster, 0, 0, 200);
+            esp_matter::cluster::power_source::attribute::create_bat_voltage(ps_cluster, 0, 0, 65535);
             log_i("MatterCustom: PowerSource cluster + BatPercentRemaining + BatVoltage added to EP0");
         }
     }
