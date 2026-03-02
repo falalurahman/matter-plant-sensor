@@ -146,15 +146,23 @@ bool MatterCustomNode::init() {
     // Feature bits must match enabled sdkconfig options; mirrors esp_matter_endpoint.cpp:83-93.
     if (root_ep) {
         icd_management::config_t icd_cfg{};
+        // UAT: kActuateSensor (0x10) = pressing a button wakes the device.
+        icd_cfg.user_active_mode_trigger.user_active_mode_trigger_hint =
+            static_cast<uint32_t>(chip::app::Clusters::IcdManagement::UserActiveModeTriggerBitmap::kActuateSensor);
+        strncpy(icd_cfg.user_active_mode_trigger.user_active_mode_trigger_instruction,
+                "Press the button to wake the device",
+                icd_management::attribute::k_user_active_mode_trigger_instruction_length);
+
         cluster_t *icd_cluster = icd_management::create(
             root_ep, &icd_cfg, CLUSTER_FLAG_SERVER,
             icd_management::feature::long_idle_time_support::get_id() |
             icd_management::feature::check_in_protocol_support::get_id() |
+            icd_management::feature::user_active_mode_trigger::get_id() |
             0);
         if (icd_cluster == nullptr) {
             log_w("MatterCustom: failed to create ICD Management cluster on EP0");
         } else {
-            log_i("MatterCustom: ICD Management cluster added to EP0 (LIT+CIP features)");
+            log_i("MatterCustom: ICD Management cluster added to EP0 (LIT+CIP+UAT features)");
         }
     }
 
