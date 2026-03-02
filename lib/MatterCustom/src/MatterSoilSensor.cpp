@@ -6,9 +6,11 @@
 
 #include "MatterSoilSensor.h"
 #include "MatterCustom.h"
+#include <lib/core/TLV.h>
 
 using namespace esp_matter;
 using namespace esp_matter::endpoint;
+using namespace esp_matter::cluster;
 using namespace chip::app::Clusters;
 
 bool MatterSoilSensor::attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id,
@@ -42,6 +44,36 @@ bool MatterSoilSensor::begin(uint16_t raw) {
     _rawMoisture = raw;
     setEndPointId(endpoint::get_id(ep));
     log_i("SoilSensor: endpoint_id=%d", getEndPointId());
+
+    // Add fixed_label cluster to distinguish this endpoint from the ambient humidity sensor.
+    // Label: {label: "Soil", value: "Moisture"}
+    fixed_label::config_t fl_config{};
+    cluster_t *fl_cluster = fixed_label::create(ep, &fl_config, CLUSTER_FLAG_SERVER);
+    if (fl_cluster) {
+        // Encode [{label:"Soil", value:"Moisture"}] as a CHIP TLV array of LabelStructs.
+        static uint8_t s_label_tlv[48];
+        chip::TLV::TLVWriter writer;
+        writer.Init(s_label_tlv, sizeof(s_label_tlv));
+        chip::TLV::TLVType outerArr, innerStr;
+        writer.StartContainer(chip::TLV::AnonymousTag(), chip::TLV::kTLVType_Array, outerArr);
+        writer.StartContainer(chip::TLV::AnonymousTag(), chip::TLV::kTLVType_Structure, innerStr);
+        writer.PutString(chip::TLV::ContextTag(0), "Soil");
+        writer.PutString(chip::TLV::ContextTag(1), "Moisture");
+        writer.EndContainer(innerStr);
+        writer.EndContainer(outerArr);
+        writer.Finalize();
+        uint16_t tlv_len = (uint16_t)writer.GetLengthWritten();
+
+        attribute_t *lbl_attr = attribute::get(fl_cluster, FixedLabel::Attributes::LabelList::Id);
+        if (lbl_attr) {
+            esp_matter_attr_val_t lbl_val = esp_matter_array(s_label_tlv, tlv_len, 1);
+            attribute::set_val(lbl_attr, &lbl_val);
+            log_i("SoilSensor: fixed_label {Soil, Moisture} set on EP%d", getEndPointId());
+        }
+    } else {
+        log_w("SoilSensor: failed to create fixed_label cluster");
+    }
+
     _started = true;
     return true;
 }
