@@ -46,9 +46,11 @@ static constexpr uint8_t     PIN_I2C_SCL      = 5;
 static constexpr uint8_t  I2C_ADDR_SHT4X   = 0x44;
 static constexpr uint8_t  I2C_ADDR_BH1750  = 0x23;
 
-// Action button (BOOT pin) — short press: force sensor read; long press: decommission
-static constexpr uint8_t  ACTION_BUTTON_PIN    = BOOT_PIN;
-static constexpr uint32_t ACTION_LONG_PRESS_MS = 5000;
+// Action button — GPIO 10 (dedicated PCB button, active-LOW with internal pull-up).
+// Single press: start 5-second confirmation window, then force sensor read.
+// Second press within the window: decommission (factory reset).
+static constexpr uint8_t  ACTION_BUTTON_PIN        = 10;
+static constexpr uint32_t ACTION_CONFIRM_WINDOW_MS = 5000;
 
 // Battery voltage limits (mV) for a single-cell LiPo, 1:1 divider on ADC.
 // ADC attenuation 11 dB → full-scale ~3100 mV.  Divider halves Vbat.
@@ -97,7 +99,9 @@ static uint32_t gBatteryMv    = 0;   // actual Vbat in mV (ADC × 2, 1:1 divider
 // ─── Timing ──────────────────────────────────────────────────────────────────
 static uint32_t gWakeStartMs     = 0;  // millis() at start of setup() for cycle time logging
 static uint32_t gSensorPowerOnMs = 0;  // millis() when sensor power GPIO went HIGH
-static uint32_t gIdleStart       = 0;
+static uint32_t gIdleStart            = 0;
+static uint32_t gActionPressedAt      = 0;  // millis() of first button press in session
+static uint32_t gActionDecommStart    = 0;  // millis() of current continuous hold; 0 = not held
 static uint32_t gBH1750Start     = 0;
 static bool     gBH1750Armed     = false;
 
@@ -373,31 +377,36 @@ void loop() {
     }
 
     // ── ACTION_BUTTON_PRESSED ────────────────────────────────────────────────
-    // Tracks how long the action button is held.
-    // Short press (<5 s): force an immediate sensor read cycle.
-    // Long press (≥5 s): factory-reset Matter credentials → restart.
+    // gActionPressedAt:   timestamp of the very first press (session start).
+    // gActionDecommStart: timestamp of the current continuous hold; 0 = not held.
+    //
+    // Decommission if any continuous hold reaches 5 s (first press or re-press).
+    // Sensor read if button is not held and 5 s have elapsed since the first press.
     case State::ACTION_BUTTON_PRESSED: {
-        static uint32_t pressedAt = 0;
-        if (pressedAt == 0) pressedAt = millis();
-
         bool held = (digitalRead(ACTION_BUTTON_PIN) == LOW);
 
-        if (!held) {
-            // Released before timeout — force sensor read.
-            pressedAt = 0;
-            Serial.println("Action button: short press — forcing sensor read.");
-            gIdleStart = millis();
-            gState = State::IDLE_WAIT;
-            break;
+        if (held) {
+            if (gActionPressedAt == 0)    gActionPressedAt   = millis();
+            if (gActionDecommStart == 0)  gActionDecommStart = millis();
+        } else {
+            gActionDecommStart = 0;   // reset hold timer on release
         }
 
-        if (millis() - pressedAt >= ACTION_LONG_PRESS_MS) {
-            // Held long enough — decommission.
-            pressedAt = 0;
-            Serial.println("Action button: long press — decommissioning…");
+        if (gActionDecommStart != 0 && millis() - gActionDecommStart >= ACTION_CONFIRM_WINDOW_MS) {
+            gActionPressedAt = 0; 
+            gActionDecommStart = 0;
+            Serial.println("Action button: held 5 s — decommissioning…");
             MatterCustomNode::decommission();
             delay(500);
             gState = State::MATTER_DECOMMISSIONED;
+            break;
+        }
+
+        if (!held && gActionPressedAt != 0 && millis() - gActionPressedAt >= ACTION_CONFIRM_WINDOW_MS) {
+            gActionPressedAt = 0;
+            Serial.println("Action button: 5 s window expired — forcing sensor read.");
+            gIdleStart = millis();
+            gState     = State::IDLE_WAIT;
         }
         break;
     }
