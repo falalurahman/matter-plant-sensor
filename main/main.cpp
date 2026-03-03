@@ -566,6 +566,11 @@ void loop() {
         // Power off sensors before entering deep sleep.
         digitalWrite(PIN_SENSOR_PWR, LOW);
 
+        // Release I2C bus and float SDA/SCL to prevent leakage current during sleep.
+        Wire.end();
+        pinMode(PIN_I2C_SDA, INPUT);
+        pinMode(PIN_I2C_SCL, INPUT);
+
         Serial.printf("Cycle complete — active for %lu ms. Entering deep sleep for %d s…\n",
               millis() - gWakeStartMs, ICD_WAKE_INTERVAL_S);
         Serial.flush();
