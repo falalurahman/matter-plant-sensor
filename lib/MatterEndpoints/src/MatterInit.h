@@ -1,4 +1,4 @@
-// MatterCustom.h
+// MatterInit.h
 // Minimalist Matter node initializer — bypasses Matter.h and ArduinoMatter.
 // Includes only MatterEndPoint.h from the arduino-esp32 core.
 // Direct SDK access via esp_matter::node::create().
@@ -19,11 +19,11 @@
 #include "platform/ESP32/OpenthreadLauncher.h"
 #endif
 
-// ─── MatterCustomNode ────────────────────────────────────────────────────────
+// ─── MatterInit ──────────────────────────────────────────────────────────────
 // Singleton wrapper for esp_matter node lifecycle.
 // Call init() before creating any endpoints, then begin() after all endpoints
 // have been registered to start the Matter/Thread stack.
-class MatterCustomNode {
+class MatterInit {
 public:
     // Create the Matter root node. Must be called exactly once, before any
     // endpoint's begin() method. Adds the PowerSource (Battery) cluster to EP0.

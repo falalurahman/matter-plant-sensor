@@ -4,7 +4,7 @@
 #ifdef CONFIG_ESP_MATTER_ENABLE_DATA_MODEL
 
 #include "MatterAmbientHumidity.h"
-#include "MatterCustom.h"
+#include "MatterInit.h"
 
 using namespace esp_matter;
 using namespace esp_matter::endpoint;
