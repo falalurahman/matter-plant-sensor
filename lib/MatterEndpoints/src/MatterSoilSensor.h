@@ -17,15 +17,15 @@ public:
     MatterSoilSensor() {}
     ~MatterSoilSensor() { end(); }
 
-    // Initialize and register the endpoint. moisturePct is the initial reading (0–100).
-    bool begin(double moisturePct = 0.0);
+    // Initialize and register the endpoint. moisturePercent is the initial reading (0–100).
+    bool begin(double moisturePercent = 0.0);
     void end();
 
     // Update the measured soil moisture (%, precision to 0.01 %).
-    bool setMoisture(double moisturePct);
+    bool setMoisture(double moisturePercent);
     double getMoisture() const { return _rawMoisture / 100.0; }
 
-    void operator=(double moisturePct) { setMoisture(moisturePct); }
+    void operator=(double moisturePercent) { setMoisture(moisturePercent); }
     operator double()                  { return getMoisture(); }
 
     bool attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id,

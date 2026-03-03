@@ -78,8 +78,8 @@ bool MatterSoilSensor::begin(uint16_t raw) {
     return true;
 }
 
-bool MatterSoilSensor::begin(double moisturePct) {
-    double clamped = constrain(moisturePct, 0.0, 100.0);
+bool MatterSoilSensor::begin(double moisturePercent) {
+    double clamped = constrain(moisturePercent, 0.0, 100.0);
     return begin(static_cast<uint16_t>(clamped * 100.0));
 }
 
@@ -107,8 +107,8 @@ bool MatterSoilSensor::setRaw(uint16_t raw) {
     return true;
 }
 
-bool MatterSoilSensor::setMoisture(double moisturePct) {
-    double clamped = constrain(moisturePct, 0.0, 100.0);
+bool MatterSoilSensor::setMoisture(double moisturePercent) {
+    double clamped = constrain(moisturePercent, 0.0, 100.0);
     return setRaw(static_cast<uint16_t>(clamped * 100.0));
 }
 

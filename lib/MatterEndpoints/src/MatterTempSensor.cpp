@@ -34,16 +34,16 @@ bool MatterTempSensor::begin(int16_t raw) {
         log_e("TempSensor: failed to create endpoint");
         return false;
     }
-    _rawTemp = raw;
+    _rawTemperature = raw;
     setEndPointId(endpoint::get_id(ep));
     log_i("TempSensor: endpoint_id=%d", getEndPointId());
     _started = true;
     return true;
 }
 
-bool MatterTempSensor::begin(double tempC) {
+bool MatterTempSensor::begin(double temperatureCelsius) {
     // Clamp to Matter range: −100 °C … +327.67 °C (int16 × 100)
-    double clamped = constrain(tempC, -100.0, 327.67);
+    double clamped = constrain(temperatureCelsius, -100.0, 327.67);
     return begin(static_cast<int16_t>(clamped * 100.0));
 }
 
@@ -51,7 +51,7 @@ void MatterTempSensor::end() { _started = false; }
 
 bool MatterTempSensor::setRaw(int16_t raw) {
     if (!_started) { log_e("TempSensor: not started"); return false; }
-    if (_rawTemp == raw) return true;
+    if (_rawTemperature == raw) return true;
 
     esp_matter_attr_val_t v = esp_matter_invalid(NULL);
     if (!getAttributeVal(TemperatureMeasurement::Id,
@@ -65,13 +65,13 @@ bool MatterTempSensor::setRaw(int16_t raw) {
         log_e("TempSensor: failed to update attribute");
         return false;
     }
-    _rawTemp = raw;
+    _rawTemperature = raw;
     log_v("TempSensor: %.2f °C", raw / 100.0f);
     return true;
 }
 
-bool MatterTempSensor::setTemperature(double tempC) {
-    double clamped = constrain(tempC, -100.0, 327.67);
+bool MatterTempSensor::setTemperature(double temperatureCelsius) {
+    double clamped = constrain(temperatureCelsius, -100.0, 327.67);
     return setRaw(static_cast<int16_t>(clamped * 100.0));
 }
 

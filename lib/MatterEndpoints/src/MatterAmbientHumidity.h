@@ -12,16 +12,16 @@ public:
     MatterAmbientHumidity() {}
     ~MatterAmbientHumidity() { end(); }
 
-    // Initialize and register the endpoint. humidityPct is the initial reading (0–100).
-    bool begin(double humidityPct = 0.0);
+    // Initialize and register the endpoint. humidityPercent is the initial reading (0–100).
+    bool begin(double humidityPercent = 0.0);
     void end();
 
     // Update the measured humidity (%, precision to 0.01 %).
-    bool setHumidity(double humidityPct);
+    bool setHumidity(double humidityPercent);
     double getHumidity() const { return _rawHumidity / 100.0; }
 
-    void operator=(double humidityPct) { setHumidity(humidityPct); }
-    operator double()                  { return getHumidity(); }
+    void operator=(double humidityPercent) { setHumidity(humidityPercent); }
+    operator double()                      { return getHumidity(); }
 
     bool attributeChangeCB(uint16_t endpoint_id, uint32_t cluster_id,
                            uint32_t attribute_id, esp_matter_attr_val_t *val) override;
