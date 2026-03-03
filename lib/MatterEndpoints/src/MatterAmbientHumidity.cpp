@@ -45,8 +45,8 @@ bool MatterAmbientHumidity::begin(uint16_t raw) {
     return true;
 }
 
-bool MatterAmbientHumidity::begin(double humidityPct) {
-    double clamped = constrain(humidityPct, 0.0, 100.0);
+bool MatterAmbientHumidity::begin(double humidityPercent) {
+    double clamped = constrain(humidityPercent, 0.0, 100.0);
     return begin(static_cast<uint16_t>(clamped * 100.0));
 }
 
@@ -74,8 +74,8 @@ bool MatterAmbientHumidity::setRaw(uint16_t raw) {
     return true;
 }
 
-bool MatterAmbientHumidity::setHumidity(double humidityPct) {
-    double clamped = constrain(humidityPct, 0.0, 100.0);
+bool MatterAmbientHumidity::setHumidity(double humidityPercent) {
+    double clamped = constrain(humidityPercent, 0.0, 100.0);
     return setRaw(static_cast<uint16_t>(clamped * 100.0));
 }
 

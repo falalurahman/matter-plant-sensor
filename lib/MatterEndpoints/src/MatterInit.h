@@ -46,6 +46,10 @@ public:
     // without triggering on subsequent wakeups from light sleep.
     static bool getAndClearJustCommissioned();
 
+    // Returns true if at least one controller has an active subscription.
+    // Thread-safe: backed by an atomic counter updated on the CHIP task thread.
+    static bool hasActiveSubscription() { return _subscriptionTracker.hasActiveSubscription(); }
+
     // ── Battery reporting ────────────────────────────────────────────────────
     // Update BatteryPercentageRemaining and BatChargeLevel on EP0 (0–100 %).
     static bool setBatteryPercent(uint8_t percent);
@@ -89,7 +93,7 @@ private:
     static bool _initialized;
     static bool _started;
     static esp_matter::node_t *_node;
-    static volatile bool _justCommissioned;
+    static std::atomic<bool> _justCommissioned;
 
     static void eventCB(const ChipDeviceEvent *event, intptr_t arg);
 
@@ -121,10 +125,10 @@ private:
         std::atomic<int> _count{0};
     };
 
-    static ICDObserver           _icdObserver;
-    static std::atomic<bool>     _icdIdleReady;
-    static SubscriptionTracker   _subTracker;
-    static std::atomic<uint32_t> _sDirtyCount;
+    static ICDObserver              _icdObserver;
+    static std::atomic<bool>        _icdIdleReady;
+    static SubscriptionTracker      _subscriptionTracker;
+    static std::atomic<uint32_t>    _pendingDirtyReportCount;
 
     // Runs on the CHIP task thread to safely read GetNumDirtySubscriptions().
     static void _checkDirtyWork(intptr_t);

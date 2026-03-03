@@ -55,41 +55,38 @@
 #ifndef ICD_WAKE_INTERVAL_S
 #define ICD_WAKE_INTERVAL_S 3600  // 1 hour; mirrors CONFIG_ICD_IDLE_MODE_INTERVAL_SEC
 #endif
-#ifndef COMMISSIONING_GRACE_MS
-#define COMMISSIONING_GRACE_MS 30000  // 10s stay-awake after first commissioning
-#endif
 
 // Action button confirmation window (ms).
 static constexpr uint32_t ACTION_CONFIRM_WINDOW_MS = 5000;
 
 // Battery voltage limits (mV) for a single-cell LiPo, 1:1 divider on ADC.
 // ADC attenuation 11 dB → full-scale ~3100 mV.  Divider halves Vbat.
-static constexpr float VBAT_MAX_MV = 4200.0f;
-static constexpr float VBAT_MIN_MV = 3000.0f;
-static constexpr float ADC_FULL_MV = 3100.0f;
+static constexpr float BATTERY_MAX_MILLIVOLTS     = 4200.0f;
+static constexpr float BATTERY_MIN_MILLIVOLTS     = 3000.0f;
+static constexpr float ADC_FULL_SCALE_MILLIVOLTS  = 3100.0f;
 
 // Minimum change required before pushing a Matter attribute update.
-static constexpr double TEMP_THRESHOLD_C    = 0.1;   // °C
-static constexpr double HUMIDITY_THRESHOLD  = 0.5;   // %
-static constexpr float  LUX_THRESHOLD_PCT   = 5.0f;  // % relative change
-static constexpr double SOIL_THRESHOLD      = 0.5;   // %
-static constexpr uint8_t BATTERY_THRESHOLD  = 1;     // %
+static constexpr double  TEMPERATURE_THRESHOLD_CELSIUS = 0.1;   // °C
+static constexpr double  HUMIDITY_THRESHOLD            = 0.5;   // %
+static constexpr float   LUX_THRESHOLD_PERCENT         = 5.0f;  // % relative change
+static constexpr double  SOIL_THRESHOLD                = 0.5;   // %
+static constexpr uint8_t BATTERY_THRESHOLD             = 1;     // %
 
-// BH1750 measurement time for Continuous High-Resolution Mode 2 (0.5 lx).
-static constexpr uint32_t BH1750_MEAS_MS = 180;
+// BH1750 measurement time for One-Time High-Resolution Mode 2 (0.5 lx).
+static constexpr uint32_t LIGHT_SENSOR_MEASUREMENT_MILLIS = 180;
 
 // ─── Matter endpoints ────────────────────────────────────────────────────────
-static MatterTempSensor     gTempSensor;
+static MatterTempSensor      gTempSensor;
 static MatterAmbientHumidity gAmbHumidity;
-static MatterLightSensor    gLightSensor;
-static MatterSoilSensor     gSoilSensor;
+static MatterLightSensor     gLightSensor;
+static MatterSoilSensor      gSoilSensor;
 
 // ─── FSM ─────────────────────────────────────────────────────────────────────
 enum class State : uint8_t {
     SYSTEM_BOOT,
     MATTER_READY,
     MATTER_DECOMMISSIONED,   // wait for BLE commission + Thread join
-    COMMISSIONING_GRACE,     // idle hold so controller can finish setup
+    COMMISSIONING_GRACE,     // idle hold so controller can complete subscriptions
     ACTION_BUTTON_PRESSED,   // button held: short press → force read, long press → decommission
     IDLE_WAIT,
     SENSOR_READ,
@@ -99,30 +96,30 @@ enum class State : uint8_t {
 static State gState = State::SYSTEM_BOOT;
 
 // ─── Sensor data (last read) ─────────────────────────────────────────────────
-static double  gTempC        = 0.0;
-static double  gHumidityPct  = 0.0;
-static float   gLux          = 0.0f;
-static double  gSoilPct      = 0.0;
-static uint8_t  gBatteryPct   = 0;
-static uint32_t gBatteryMv    = 0;   // actual Vbat in mV (ADC × 2, 1:1 divider)
+static double   gTemperatureCelsius = 0.0;
+static double   gHumidityPercent    = 0.0;
+static float    gLux                = 0.0f;
+static double   gSoilPercent        = 0.0;
+static uint8_t  gBatteryPercent     = 0;
+static uint32_t gBatteryMillivolts  = 0;   // actual Vbat in mV (ADC × 2, 1:1 divider)
 
 // ─── Timing ──────────────────────────────────────────────────────────────────
-static uint32_t gWakeStartMs     = 0;  // millis() at start of setup() for cycle time logging
-static uint32_t gSensorPowerOnMs = 0;  // millis() when sensor power GPIO went HIGH
-static uint32_t gIdleStart            = 0;
-static uint32_t gActionPressedAt      = 0;  // millis() of first button press in session
-static uint32_t gActionDecommStart    = 0;  // millis() of current continuous hold; 0 = not held
-static uint32_t gBH1750Start     = 0;
-static bool     gBH1750Armed     = false;
+static uint32_t gWakeStartMillis             = 0;  // millis() at start of setup() for cycle time logging
+static uint32_t gSensorPowerOnMillis         = 0;  // millis() when sensor power GPIO went HIGH
+static uint32_t gIdleStart                   = 0;
+static uint32_t gActionPressedAt             = 0;  // millis() of first button press in session
+static uint32_t gActionDecommStart           = 0;  // millis() of current continuous hold; 0 = not held
+static uint32_t gLightSensorMeasurementStart = 0;
+static bool     gLightSensorMeasurementArmed = false;
 
 // ─── Sensor sampling (3× median) ─────────────────────────────────────────────
-static uint8_t gReadCount          = 0;
-static double  gTempReadings[3]    = {};
-static double  gHumReadings[3]     = {};
-static float   gLuxReadings[3]     = {};
-static double  gSoilReadings[3]    = {};
-static uint8_t  gBatReadings[3]    = {};
-static uint32_t gBatMvReadings[3]  = {};
+static uint8_t  gSampleCount                 = 0;
+static double   gTemperatureReadings[3]      = {};
+static double   gHumidityReadings[3]         = {};
+static float    gLuxReadings[3]              = {};
+static double   gSoilMoistureReadings[3]     = {};
+static uint8_t  gBatteryReadings[3]          = {};
+static uint32_t gBatteryMillivoltReadings[3] = {};
 
 // ─── RTC state (survives deep sleep) ─────────────────────────────────────────
 RTC_DATA_ATTR static uint32_t               gBootCount  = 0;
@@ -133,9 +130,20 @@ RTC_DATA_ATTR static esp_sleep_wakeup_cause_t gWakeReason = ESP_SLEEP_WAKEUP_UND
 // ════════════════════════════════════════════════════════════════════════════
 
 // ── SHT4x ────────────────────────────────────────────────────────────────────
+// CRC-8 check for SHT4x data (polynomial 0x31, initial value 0xFF).
+static uint8_t sht4xCRC(uint8_t msb, uint8_t lsb) {
+    uint8_t crc = 0xFF;
+    for (uint8_t b : {msb, lsb}) {
+        crc ^= b;
+        for (int i = 0; i < 8; i++)
+            crc = (crc & 0x80) ? (crc << 1) ^ 0x31 : (crc << 1);
+    }
+    return crc;
+}
+
 // Trigger a high-precision measurement (0xFD) and synchronously read the result.
 // Returns false if the sensor is absent or CRC fails.
-static bool sht4xRead(double &tempC, double &humPct) {
+static bool sht4xRead(double &temperatureCelsius, double &humidityPercent) {
     Wire.beginTransmission(I2C_ADDR_SHT4X);
     Wire.write(0xFD);  // Measure T+RH, high precision
     if (Wire.endTransmission() != 0) return false;
@@ -148,11 +156,14 @@ static bool sht4xRead(double &tempC, double &humPct) {
     uint8_t buf[6];
     for (auto &b : buf) b = Wire.read();
 
+    if (sht4xCRC(buf[0], buf[1]) != buf[2]) return false;  // temperature CRC
+    if (sht4xCRC(buf[3], buf[4]) != buf[5]) return false;  // humidity CRC
+
     uint16_t rawT  = (static_cast<uint16_t>(buf[0]) << 8) | buf[1];
     uint16_t rawRH = (static_cast<uint16_t>(buf[3]) << 8) | buf[4];
 
-    tempC  = -45.0 + 175.0 * rawT  / 65535.0;
-    humPct = constrain(-6.0 + 125.0 * rawRH / 65535.0, 0.0, 100.0);
+    temperatureCelsius = -45.0 + 175.0 * rawT  / 65535.0;
+    humidityPercent    = constrain(-6.0 + 125.0 * rawRH / 65535.0, 0.0, 100.0);
     return true;
 }
 
@@ -172,7 +183,7 @@ static void bh1750Trigger() {
     Wire.endTransmission();
 }
 
-// Read the most recent BH1750 result.  Call after BH1750_MEAS_MS has elapsed.
+// Read the most recent BH1750 result.  Call after LIGHT_SENSOR_MEASUREMENT_MILLIS has elapsed.
 static bool bh1750Read(float &lux) {
     if (Wire.requestFrom(static_cast<uint8_t>(I2C_ADDR_BH1750), static_cast<uint8_t>(2)) != 2)
         return false;
@@ -185,17 +196,18 @@ static bool bh1750Read(float &lux) {
 static double readSoilMoisture() {
     uint16_t raw = analogRead(SOIL_MOISTURE_PIN);
     // Capacitive sensor: dry = high ADC (4095), wet = low ADC (0).  Invert.
-    double pct = map(raw, 4095, 0, 0, 10000) / 100.0;
+    double pct = (4095 - raw) / 4095.0 * 100.0;
     return constrain(pct, 0.0, 100.0);
 }
 
 static uint8_t readBatteryPercent() {
     uint16_t raw = analogRead(BATTERY_ADC_PIN);
-    float adc_mv  = raw * ADC_FULL_MV / 4095.0f;
-    float vbat_mv = adc_mv * 2.0f;  // 1:1 divider → actual Vbat = 2× ADC voltage
-    gBatteryMv = static_cast<uint32_t>(vbat_mv);  // store for BatVoltage attribute
-    float pct = (vbat_mv - VBAT_MIN_MV) / (VBAT_MAX_MV - VBAT_MIN_MV) * 100.0f;
-    return static_cast<uint8_t>(constrain(pct, 0.0f, 100.0f));
+    float adcMillivolts     = raw * ADC_FULL_SCALE_MILLIVOLTS / 4095.0f;
+    float batteryMillivolts = adcMillivolts * 2.0f;  // 1:1 divider → actual Vbat = 2× ADC voltage
+    gBatteryMillivolts = static_cast<uint32_t>(batteryMillivolts);  // store for BatVoltage attribute
+    float batteryPercent = (batteryMillivolts - BATTERY_MIN_MILLIVOLTS) /
+                           (BATTERY_MAX_MILLIVOLTS - BATTERY_MIN_MILLIVOLTS) * 100.0f;
+    return static_cast<uint8_t>(constrain(batteryPercent, 0.0f, 100.0f));
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -216,13 +228,13 @@ static T median3(T a, T b, T c) {
 // ════════════════════════════════════════════════════════════════════════════
 
 void setup() {
-    gWakeStartMs = millis();  // Record wake time for end-of-cycle log
+    gWakeStartMillis = millis();  // Record wake time for end-of-cycle log
 
     // Power on sensors immediately via NPN transistor on SENSOR_PWR_PIN.
     // Sensors stabilize while the Matter stack initializes below (~3–10 s).
     pinMode(static_cast<gpio_num_t>(SENSOR_PWR_PIN), OUTPUT);
     digitalWrite(static_cast<gpio_num_t>(SENSOR_PWR_PIN), HIGH);
-    gSensorPowerOnMs = millis();
+    gSensorPowerOnMillis = millis();
 
     Serial.begin(115200);
     gBootCount++;
@@ -307,7 +319,10 @@ void loop() {
         if (MatterInit::isCommissioned()) {
             if (gWakeReason == ESP_SLEEP_WAKEUP_EXT1) {
                 // Button woke us from deep sleep — handle as short/long press.
+                // Set gActionPressedAt so the 5-second window starts immediately,
+                // even if the button is released before loop() first runs the case.
                 Serial.println("Woke from button press — entering ACTION_BUTTON_PRESSED.");
+                gActionPressedAt = millis();
                 gState = State::ACTION_BUTTON_PRESSED;
             } else {
                 Serial.println("Already commissioned — going directly to sensor cycle.");
@@ -349,37 +364,30 @@ void loop() {
     }
 
     // ── COMMISSIONING_GRACE ──────────────────────────────────────────────────
-    // Sit idle so the Matter controller (e.g. Apple Home) can complete attribute
-    // reads, subscriptions, and ICD registration before we start the sensor cycle.
+    // Wait for the Matter controller to establish its first subscription before
+    // starting the sensor cycle.  This ensures the controller has had time to
+    // complete attribute reads and ICD registration after commissioning.
+    // Falls back to starting the cycle after 5 minutes if no subscription arrives.
     case State::COMMISSIONING_GRACE: {
         static uint32_t graceEnteredAt = 0;
-        static uint32_t stayAwakeUntil = 0;
-
-        if (graceEnteredAt == 0) graceEnteredAt = millis();
-
-        // Arm the 5-minute timer once kCommissioningComplete fires.
-        if (stayAwakeUntil == 0 && MatterInit::getAndClearJustCommissioned()) {
-            stayAwakeUntil = millis() + COMMISSIONING_GRACE_MS;
-            Serial.printf("Commissioning done — holding awake for %u s\n",
-                          COMMISSIONING_GRACE_MS / 1000);
+        if (graceEnteredAt == 0) {
+            graceEnteredAt = millis();
+            Serial.println("Commissioning done — waiting for controller subscription...");
         }
 
-        // Stay idle while the grace timer is running.
-        if (stayAwakeUntil > 0 && millis() < stayAwakeUntil) {
-            static uint32_t lastGraceLog = 0;
-            if (millis() - lastGraceLog >= 15000) {
-                lastGraceLog = millis();
-                Serial.printf("  Grace: %lu s remaining...\n",
-                              (stayAwakeUntil - millis()) / 1000);
-            }
+        if (MatterInit::hasActiveSubscription()) {
+            Serial.printf("Controller subscribed (%.1fs) — starting sensor cycle.\n",
+                          (millis() - graceEnteredAt) / 1000.0f);
+            graceEnteredAt = 0;
+            gIdleStart = millis();
+            gState = State::IDLE_WAIT;
             break;
         }
 
-        // Grace expired (or skipped) — start sensor cycle.
-        if (stayAwakeUntil > 0) {
+        // 5-minute fallback in case the controller never subscribes.
+        if (millis() - graceEnteredAt >= 300000UL) {
+            Serial.println("Grace timeout — starting sensor cycle anyway.");
             graceEnteredAt = 0;
-            stayAwakeUntil = 0;
-            Serial.println("Grace complete — starting sensor cycle.");
             gIdleStart = millis();
             gState = State::IDLE_WAIT;
         }
@@ -403,7 +411,7 @@ void loop() {
         }
 
         if (gActionDecommStart != 0 && millis() - gActionDecommStart >= ACTION_CONFIRM_WINDOW_MS) {
-            gActionPressedAt = 0; 
+            gActionPressedAt = 0;
             gActionDecommStart = 0;
             Serial.println("Action button: held 5 s — decommissioning…");
             MatterInit::decommission();
@@ -426,12 +434,12 @@ void loop() {
     // In practice Matter init + Thread rejoin takes >3 s so this is a safety
     // floor rather than a real delay.  Uses millis() — non-blocking.
     case State::IDLE_WAIT: {
-        if (millis() - gSensorPowerOnMs >= 1000) {
-            gReadCount = 0;
+        if (millis() - gSensorPowerOnMillis >= 1000) {
+            gSampleCount = 0;
             // Arm BH1750 first one-shot measurement
             bh1750Trigger();
-            gBH1750Start = millis();
-            gBH1750Armed = true;
+            gLightSensorMeasurementStart = millis();
+            gLightSensorMeasurementArmed = true;
             gState = State::SENSOR_READ;
         }
         break;
@@ -442,44 +450,44 @@ void loop() {
     // BH1750 needs 180 ms per one-shot — total extra latency ≈ 360 ms.
     case State::SENSOR_READ: {
         // Wait for current BH1750 conversion to finish (~180 ms).
-        if (gBH1750Armed && (millis() - gBH1750Start < BH1750_MEAS_MS)) break;
-        gBH1750Armed = false;
+        if (gLightSensorMeasurementArmed && (millis() - gLightSensorMeasurementStart < LIGHT_SENSOR_MEASUREMENT_MILLIS)) break;
+        gLightSensorMeasurementArmed = false;
 
         // SHT4x read first: its WRITE command is first on the bus each sub-cycle (clean bus).
         // BH1750 READ follows SHT4x READ — READ→READ transition is always clean.
         // (Reversed order fixes READ→WRITE back-to-back stall on ESP32-H2 Wire.)
-        if (!sht4xRead(gTempReadings[gReadCount], gHumReadings[gReadCount])) {
-            Serial.printf("SHT4x read failed at sample %u — using previous values\n", gReadCount);
-            gTempReadings[gReadCount] = gTempC;
-            gHumReadings[gReadCount]  = gHumidityPct;
+        if (!sht4xRead(gTemperatureReadings[gSampleCount], gHumidityReadings[gSampleCount])) {
+            Serial.printf("SHT4x read failed at sample %u — using previous values\n", gSampleCount);
+            gTemperatureReadings[gSampleCount] = gTemperatureCelsius;
+            gHumidityReadings[gSampleCount]    = gHumidityPercent;
         }
 
-        if (!bh1750Read(gLuxReadings[gReadCount])) {
-            Serial.printf("BH1750 read failed at sample %u — using previous value\n", gReadCount);
-            gLuxReadings[gReadCount] = gLux;
+        if (!bh1750Read(gLuxReadings[gSampleCount])) {
+            Serial.printf("BH1750 read failed at sample %u — using previous value\n", gSampleCount);
+            gLuxReadings[gSampleCount] = gLux;
         }
-        
-        gSoilReadings[gReadCount]  = readSoilMoisture();
-        gBatReadings[gReadCount]   = readBatteryPercent();  // also sets gBatteryMv
-        gBatMvReadings[gReadCount] = gBatteryMv;
 
-        gReadCount++;
+        gSoilMoistureReadings[gSampleCount]     = readSoilMoisture();
+        gBatteryReadings[gSampleCount]           = readBatteryPercent();  // also sets gBatteryMillivolts
+        gBatteryMillivoltReadings[gSampleCount]  = gBatteryMillivolts;
 
-        if (gReadCount < 3) {
+        gSampleCount++;
+
+        if (gSampleCount < 3) {
             // Trigger next BH1750 one-shot and stay in SENSOR_READ.
             bh1750Trigger();
-            gBH1750Start = millis();
-            gBH1750Armed = true;
+            gLightSensorMeasurementStart = millis();
+            gLightSensorMeasurementArmed = true;
         } else {
             // All 3 samples collected — compute medians.
-            gTempC       = median3(gTempReadings[0], gTempReadings[1], gTempReadings[2]);
-            gHumidityPct = median3(gHumReadings[0],  gHumReadings[1],  gHumReadings[2]);
-            gLux         = median3(gLuxReadings[0],  gLuxReadings[1],  gLuxReadings[2]);
-            gSoilPct     = median3(gSoilReadings[0], gSoilReadings[1], gSoilReadings[2]);
-            gBatteryPct  = median3(gBatReadings[0],   gBatReadings[1],   gBatReadings[2]);
-            gBatteryMv   = median3(gBatMvReadings[0], gBatMvReadings[1], gBatMvReadings[2]);
+            gTemperatureCelsius = median3(gTemperatureReadings[0],      gTemperatureReadings[1],      gTemperatureReadings[2]);
+            gHumidityPercent    = median3(gHumidityReadings[0],         gHumidityReadings[1],         gHumidityReadings[2]);
+            gLux                = median3(gLuxReadings[0],              gLuxReadings[1],              gLuxReadings[2]);
+            gSoilPercent        = median3(gSoilMoistureReadings[0],     gSoilMoistureReadings[1],     gSoilMoistureReadings[2]);
+            gBatteryPercent     = median3(gBatteryReadings[0],          gBatteryReadings[1],          gBatteryReadings[2]);
+            gBatteryMillivolts  = median3(gBatteryMillivoltReadings[0], gBatteryMillivoltReadings[1], gBatteryMillivoltReadings[2]);
             Serial.printf("Sensors (median/3) → T=%.2f°C  RH=%.1f%%  Lux=%.1f  Soil=%.1f%%  Bat=%u%%\n",
-                          gTempC, gHumidityPct, gLux, gSoilPct, gBatteryPct);
+                          gTemperatureCelsius, gHumidityPercent, gLux, gSoilPercent, gBatteryPercent);
             gState = State::DATA_PUSH;
         }
         break;
@@ -488,11 +496,11 @@ void loop() {
     // ── DATA_PUSH ────────────────────────────────────────────────────────────
     case State::DATA_PUSH: {
         // Only push if the change exceeds the threshold (saves radio traffic).
-        static double  lastTemp    = -999.0;
-        static double  lastHum     = -1.0;
-        static float   lastLux     = -1.0f;
-        static double  lastSoil    = -1.0;
-        static uint8_t lastBat     = 255;
+        static double  lastTemperature  = -999.0;
+        static double  lastHumidity     = -1.0;
+        static float   lastLux          = -1.0f;
+        static double  lastSoilMoisture = -1.0;
+        static uint8_t lastBattery      = 255;
 
         // Step 1: Wait for Thread + subscription BEFORE touching attributes.
         // Updating attributes before Thread connects triggers immediate failed CASE
@@ -505,27 +513,27 @@ void loop() {
         }
 
         // Step 2: Subscription is active — update attributes now.
-        if (fabs(gTempC - lastTemp) >= TEMP_THRESHOLD_C) {
-            gTempSensor.setTemperature(gTempC);
-            lastTemp = gTempC;
+        if (fabs(gTemperatureCelsius - lastTemperature) >= TEMPERATURE_THRESHOLD_CELSIUS) {
+            gTempSensor.setTemperature(gTemperatureCelsius);
+            lastTemperature = gTemperatureCelsius;
         }
-        if (fabs(gHumidityPct - lastHum) >= HUMIDITY_THRESHOLD) {
-            gAmbHumidity.setHumidity(gHumidityPct);
-            lastHum = gHumidityPct;
+        if (fabs(gHumidityPercent - lastHumidity) >= HUMIDITY_THRESHOLD) {
+            gAmbHumidity.setHumidity(gHumidityPercent);
+            lastHumidity = gHumidityPercent;
         }
         float luxChange = (lastLux > 0.0f) ? fabsf(gLux - lastLux) / lastLux * 100.0f : 100.0f;
-        if (luxChange >= LUX_THRESHOLD_PCT) {
+        if (luxChange >= LUX_THRESHOLD_PERCENT) {
             gLightSensor.setLux(gLux);
             lastLux = gLux;
         }
-        if (fabs(gSoilPct - lastSoil) >= SOIL_THRESHOLD) {
-            gSoilSensor.setMoisture(gSoilPct);
-            lastSoil = gSoilPct;
+        if (fabs(gSoilPercent - lastSoilMoisture) >= SOIL_THRESHOLD) {
+            gSoilSensor.setMoisture(gSoilPercent);
+            lastSoilMoisture = gSoilPercent;
         }
-        if (abs((int)gBatteryPct - (int)lastBat) >= BATTERY_THRESHOLD) {
-            MatterInit::setBatteryPercent(gBatteryPct);
-            MatterInit::setBatteryVoltage(gBatteryMv);
-            lastBat = gBatteryPct;
+        if (abs((int)gBatteryPercent - (int)lastBattery) >= BATTERY_THRESHOLD) {
+            MatterInit::setBatteryPercent(gBatteryPercent);
+            MatterInit::setBatteryVoltage(gBatteryMillivolts);
+            lastBattery = gBatteryPercent;
         }
 
         // Step 3: Drain dirty reports (subscription already active — should be fast).
@@ -582,7 +590,7 @@ void loop() {
         pinMode(I2C_SCL_PIN, INPUT);
 
         Serial.printf("Cycle complete — active for %lu ms. Entering deep sleep for %d s…\n",
-              millis() - gWakeStartMs, ICD_WAKE_INTERVAL_S);
+              millis() - gWakeStartMillis, ICD_WAKE_INTERVAL_S);
         Serial.flush();
         delay(100);  // drain UART TX buffer before power-down
 

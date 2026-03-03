@@ -19,11 +19,11 @@ using namespace chip::app::Clusters;
 bool MatterInit::_initialized      = false;
 bool MatterInit::_started          = false;
 esp_matter::node_t *MatterInit::_node = nullptr;
-volatile bool MatterInit::_justCommissioned = false;
+std::atomic<bool> MatterInit::_justCommissioned{false};
 MatterInit::ICDObserver          MatterInit::_icdObserver;
 std::atomic<bool>                      MatterInit::_icdIdleReady{false};
-MatterInit::SubscriptionTracker  MatterInit::_subTracker;
-std::atomic<uint32_t> MatterInit::_sDirtyCount{0};
+MatterInit::SubscriptionTracker  MatterInit::_subscriptionTracker;
+std::atomic<uint32_t> MatterInit::_pendingDirtyReportCount{0};
 
 // ── ICDObserver callbacks ────────────────────────────────────────────────────
 void MatterInit::ICDObserver::OnEnterActiveMode() {
@@ -41,7 +41,7 @@ void MatterInit::eventCB(const ChipDeviceEvent *event, intptr_t /*arg*/) {
     switch (event->Type) {
         case chip::DeviceLayer::DeviceEventType::kCommissioningComplete:
             log_i("Matter commissioning complete");
-            _justCommissioned = true;
+            _justCommissioned.store(true);
             break;
         case chip::DeviceLayer::DeviceEventType::kFabricRemoved: {
             const chip::FabricTable & ft = chip::Server::GetInstance().GetFabricTable();
@@ -106,9 +106,7 @@ esp_err_t MatterInit::identifyCB(
 
 // ── getAndClearJustCommissioned() ────────────────────────────────────────────
 bool MatterInit::getAndClearJustCommissioned() {
-    if (!_justCommissioned) return false;
-    _justCommissioned = false;
-    return true;
+    return _justCommissioned.exchange(false);
 }
 
 // ── init() ───────────────────────────────────────────────────────────────────
@@ -201,9 +199,9 @@ bool MatterInit::start() {
 
     // Register subscription lifecycle callback so we can track when controllers
     // re-establish subscriptions after deep sleep wakeup.
-    _subTracker.reset();
+    _subscriptionTracker.reset();
     chip::app::InteractionModelEngine::GetInstance()
-        ->RegisterReadHandlerAppCallback(&_subTracker);
+        ->RegisterReadHandlerAppCallback(&_subscriptionTracker);
     log_i("MatterCustom: SubscriptionTracker registered");
 
     // Register ICD state observer to detect ActiveMode → IdleMode transitions.
@@ -312,7 +310,7 @@ void MatterInit::SubscriptionTracker::OnSubscriptionTerminated(chip::app::ReadHa
 // Runs on the CHIP task thread (via PlatformMgr().ScheduleWork) to safely read
 // GetNumDirtySubscriptions() without a data race.
 void MatterInit::_checkDirtyWork(intptr_t) {
-    _sDirtyCount.store(
+    _pendingDirtyReportCount.store(
         (uint32_t)chip::app::InteractionModelEngine::GetInstance()
                       ->GetNumDirtySubscriptions()
     );
@@ -338,10 +336,10 @@ bool MatterInit::waitForSubscription(uint32_t timeoutMs) {
     // Apple Home responds and re-subscribes — the callback fires within seconds.
     uint32_t remaining = timeoutMs - (millis() - start);
     uint32_t subStart = millis();
-    while (!_subTracker.hasActiveSubscription() && (millis() - subStart < remaining)) {
+    while (!_subscriptionTracker.hasActiveSubscription() && (millis() - subStart < remaining)) {
         delay(200);
     }
-    if (!_subTracker.hasActiveSubscription()) {
+    if (!_subscriptionTracker.hasActiveSubscription()) {
         log_w("MatterCustom: no active subscriptions within timeout — controller not subscribed yet");
         return false;
     }
@@ -357,9 +355,9 @@ bool MatterInit::waitForDirtyDrain(uint32_t drainMs) {
     while (millis() - drainStart < drainMs) {
         chip::DeviceLayer::PlatformMgr().ScheduleWork(_checkDirtyWork, 0);
         delay(150);
-        if (_sDirtyCount.load() == 0) break;
+        if (_pendingDirtyReportCount.load() == 0) break;
     }
-    bool ok = (_sDirtyCount.load() == 0);
+    bool ok = (_pendingDirtyReportCount.load() == 0);
     log_i("MatterCustom: drain %s", ok ? "complete" : "timeout — sleeping anyway");
     return ok;
 }
