@@ -4,7 +4,7 @@
 #ifdef CONFIG_ESP_MATTER_ENABLE_DATA_MODEL
 
 #include "MatterLightSensor.h"
-#include "MatterCustom.h"
+#include "MatterInit.h"
 #include <math.h>
 
 using namespace esp_matter;

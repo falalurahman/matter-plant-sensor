@@ -1,9 +1,9 @@
-// MatterCustom.cpp — Matter node lifecycle (no Matter.h dependency)
+// MatterInit.cpp — Matter node lifecycle (no Matter.h dependency)
 
 #include <sdkconfig.h>
 #ifdef CONFIG_ESP_MATTER_ENABLE_DATA_MODEL
 
-#include "MatterCustom.h"
+#include "MatterInit.h"
 #include <app/server/Server.h>
 #include <app/InteractionModelEngine.h>
 #include <platform/ConnectivityManager.h>
@@ -16,28 +16,28 @@ using namespace esp_matter::identification;
 using namespace chip::app::Clusters;
 
 // ── Static member storage ────────────────────────────────────────────────────
-bool MatterCustomNode::_initialized      = false;
-bool MatterCustomNode::_started          = false;
-esp_matter::node_t *MatterCustomNode::_node = nullptr;
-volatile bool MatterCustomNode::_justCommissioned = false;
-MatterCustomNode::ICDObserver          MatterCustomNode::_icdObserver;
-std::atomic<bool>                      MatterCustomNode::_icdIdleReady{false};
-MatterCustomNode::SubscriptionTracker  MatterCustomNode::_subTracker;
-std::atomic<uint32_t> MatterCustomNode::_sDirtyCount{0};
+bool MatterInit::_initialized      = false;
+bool MatterInit::_started          = false;
+esp_matter::node_t *MatterInit::_node = nullptr;
+volatile bool MatterInit::_justCommissioned = false;
+MatterInit::ICDObserver          MatterInit::_icdObserver;
+std::atomic<bool>                      MatterInit::_icdIdleReady{false};
+MatterInit::SubscriptionTracker  MatterInit::_subTracker;
+std::atomic<uint32_t> MatterInit::_sDirtyCount{0};
 
 // ── ICDObserver callbacks ────────────────────────────────────────────────────
-void MatterCustomNode::ICDObserver::OnEnterActiveMode() {
+void MatterInit::ICDObserver::OnEnterActiveMode() {
     _icdIdleReady.store(false);
     log_i("MatterCustom: ICD → ActiveMode");
 }
 
-void MatterCustomNode::ICDObserver::OnEnterIdleMode() {
+void MatterInit::ICDObserver::OnEnterIdleMode() {
     _icdIdleReady.store(true);
     log_i("MatterCustom: ICD → IdleMode — safe to sleep");
 }
 
 // ── Event callback ───────────────────────────────────────────────────────────
-void MatterCustomNode::eventCB(const ChipDeviceEvent *event, intptr_t /*arg*/) {
+void MatterInit::eventCB(const ChipDeviceEvent *event, intptr_t /*arg*/) {
     switch (event->Type) {
         case chip::DeviceLayer::DeviceEventType::kCommissioningComplete:
             log_i("Matter commissioning complete");
@@ -77,7 +77,7 @@ void MatterCustomNode::eventCB(const ChipDeviceEvent *event, intptr_t /*arg*/) {
 }
 
 // ── Attribute-update callback ────────────────────────────────────────────────
-esp_err_t MatterCustomNode::attrUpdateCB(
+esp_err_t MatterInit::attrUpdateCB(
     attribute::callback_type_t type,
     uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id,
     esp_matter_attr_val_t *val, void *priv_data)
@@ -91,7 +91,7 @@ esp_err_t MatterCustomNode::attrUpdateCB(
 }
 
 // ── Identify callback ────────────────────────────────────────────────────────
-esp_err_t MatterCustomNode::identifyCB(
+esp_err_t MatterInit::identifyCB(
     identification::callback_type_t type,
     uint16_t endpoint_id, uint8_t effect_id, uint8_t effect_variant,
     void *priv_data)
@@ -105,14 +105,14 @@ esp_err_t MatterCustomNode::identifyCB(
 }
 
 // ── getAndClearJustCommissioned() ────────────────────────────────────────────
-bool MatterCustomNode::getAndClearJustCommissioned() {
+bool MatterInit::getAndClearJustCommissioned() {
     if (!_justCommissioned) return false;
     _justCommissioned = false;
     return true;
 }
 
 // ── init() ───────────────────────────────────────────────────────────────────
-bool MatterCustomNode::init() {
+bool MatterInit::init() {
     if (_initialized) return true;
 
     // Create Matter root node (EP0 with descriptor + basic-information clusters).
@@ -127,10 +127,11 @@ bool MatterCustomNode::init() {
     endpoint_t *root_ep = endpoint::get(_node, 0);
     if (root_ep) {
         power_source::config_t ps_config;
-        ps_config.status = 1;   // PowerSourceStatusEnum::kBattery
+        ps_config.status = static_cast<uint8_t>(PowerSource::PowerSourceStatusEnum::kActive);
         ps_config.order  = 0;
-        // Battery feature ID = 0x02 (mandatory attrs: BatChargeLevel, BatReplacementNeeded, BatReplaceability)
-        cluster_t *ps_cluster = power_source::create(root_ep, &ps_config, CLUSTER_FLAG_SERVER, 0x02);
+        // kBattery feature (mandatory attrs: BatChargeLevel, BatReplacementNeeded, BatReplaceability)
+        cluster_t *ps_cluster = power_source::create(root_ep, &ps_config, CLUSTER_FLAG_SERVER,
+                                                     static_cast<uint32_t>(PowerSource::Feature::kBattery));
         if (ps_cluster == nullptr) {
             log_w("MatterCustom: failed to create PowerSource cluster on EP0");
         } else {
@@ -172,7 +173,7 @@ bool MatterCustomNode::init() {
 }
 
 // ── start() ──────────────────────────────────────────────────────────────────
-bool MatterCustomNode::start() {
+bool MatterInit::start() {
     if (!_initialized) {
         log_e("MatterCustom: call init() before start()");
         return false;
@@ -221,25 +222,25 @@ bool MatterCustomNode::start() {
 }
 
 // ── Status queries ───────────────────────────────────────────────────────────
-bool MatterCustomNode::isCommissioned() {
+bool MatterInit::isCommissioned() {
     return chip::Server::GetInstance().GetFabricTable().FabricCount() > 0;
 }
 
-bool MatterCustomNode::isConnected() {
+bool MatterInit::isConnected() {
     return chip::DeviceLayer::ConnectivityMgr().IsThreadAttached();
 }
 
-bool MatterCustomNode::isCommissioningWindowOpen() {
+bool MatterInit::isCommissioningWindowOpen() {
     return chip::Server::GetInstance().GetCommissioningWindowManager()
                .IsCommissioningWindowOpen();
 }
 
-void MatterCustomNode::decommission() {
+void MatterInit::decommission() {
     esp_matter::factory_reset();
 }
 
 // ── Battery update ───────────────────────────────────────────────────────────
-bool MatterCustomNode::setBatteryPercent(uint8_t percent) {
+bool MatterInit::setBatteryPercent(uint8_t percent) {
     if (!_started) return false;
     if (percent > 100) percent = 100;
 
@@ -247,9 +248,8 @@ bool MatterCustomNode::setBatteryPercent(uint8_t percent) {
     uint8_t raw = percent * 2;
 
     esp_matter_attr_val_t val = esp_matter_invalid(NULL);
-    // PowerSource cluster 0x002F, BatPercentRemaining attribute 0x000C
-    constexpr uint32_t kPowerSourceCluster = 0x002F;
-    constexpr uint32_t kBatPercentAttr     = 0x000C;
+    constexpr uint32_t kPowerSourceCluster = PowerSource::Id;
+    constexpr uint32_t kBatPercentAttr     = PowerSource::Attributes::BatPercentRemaining::Id;
 
     endpoint_t *root_ep = endpoint::get(_node, 0);
     if (!root_ep) return false;
@@ -265,9 +265,12 @@ bool MatterCustomNode::setBatteryPercent(uint8_t percent) {
     if (attribute::update(0, kPowerSourceCluster, kBatPercentAttr, &val) != ESP_OK) return false;
 
     // Also update BatChargeLevel so Apple Home shows the correct battery indicator.
-    // BatChargeLevelEnum: 0=OK, 1=Warning, 2=Critical
-    constexpr uint32_t kBatChargeLevelAttr = 0x000E;
-    uint8_t chargeLevel = (percent > 33) ? 0 : (percent > 10) ? 1 : 2;
+    constexpr uint32_t kBatChargeLevelAttr = PowerSource::Attributes::BatChargeLevel::Id;
+    uint8_t chargeLevel = (percent > 33)
+        ? static_cast<uint8_t>(PowerSource::BatChargeLevelEnum::kOk)
+        : (percent > 10)
+            ? static_cast<uint8_t>(PowerSource::BatChargeLevelEnum::kWarning)
+            : static_cast<uint8_t>(PowerSource::BatChargeLevelEnum::kCritical);
     attribute_t *lvlAttr = attribute::get(ps_cluster, kBatChargeLevelAttr);
     if (lvlAttr) {
         esp_matter_attr_val_t lvlVal = esp_matter_invalid(NULL);
@@ -279,10 +282,10 @@ bool MatterCustomNode::setBatteryPercent(uint8_t percent) {
 }
 
 // ── Battery voltage update ───────────────────────────────────────────────────
-bool MatterCustomNode::setBatteryVoltage(uint32_t mv) {
+bool MatterInit::setBatteryVoltage(uint32_t mv) {
     if (!_started) return false;
-    constexpr uint32_t kPowerSourceCluster = 0x002F;
-    constexpr uint32_t kBatVoltageAttr     = 0x000B;
+    constexpr uint32_t kPowerSourceCluster = PowerSource::Id;
+    constexpr uint32_t kBatVoltageAttr     = PowerSource::Attributes::BatVoltage::Id;
     endpoint_t *root_ep = endpoint::get(_node, 0);
     if (!root_ep) return false;
     cluster_t *ps_cluster = cluster::get(root_ep, kPowerSourceCluster);
@@ -295,12 +298,12 @@ bool MatterCustomNode::setBatteryVoltage(uint32_t mv) {
 }
 
 // ── SubscriptionTracker callbacks ────────────────────────────────────────────
-void MatterCustomNode::SubscriptionTracker::OnSubscriptionEstablished(chip::app::ReadHandler &) {
+void MatterInit::SubscriptionTracker::OnSubscriptionEstablished(chip::app::ReadHandler &) {
     _count.fetch_add(1);
     log_i("MatterCustom: subscription established (active=%d)", _count.load());
 }
 
-void MatterCustomNode::SubscriptionTracker::OnSubscriptionTerminated(chip::app::ReadHandler &) {
+void MatterInit::SubscriptionTracker::OnSubscriptionTerminated(chip::app::ReadHandler &) {
     if (_count.load() > 0) _count.fetch_sub(1);
     log_i("MatterCustom: subscription terminated (active=%d)", _count.load());
 }
@@ -308,7 +311,7 @@ void MatterCustomNode::SubscriptionTracker::OnSubscriptionTerminated(chip::app::
 // ── _checkDirtyWork ──────────────────────────────────────────────────────────
 // Runs on the CHIP task thread (via PlatformMgr().ScheduleWork) to safely read
 // GetNumDirtySubscriptions() without a data race.
-void MatterCustomNode::_checkDirtyWork(intptr_t) {
+void MatterInit::_checkDirtyWork(intptr_t) {
     _sDirtyCount.store(
         (uint32_t)chip::app::InteractionModelEngine::GetInstance()
                       ->GetNumDirtySubscriptions()
@@ -319,7 +322,7 @@ void MatterCustomNode::_checkDirtyWork(intptr_t) {
 // Phase 1+2: Wait for Thread connectivity and at least one active subscription.
 // Must be called BEFORE updating attributes so no failed CASE session attempts
 // are triggered while Thread is still joining.
-bool MatterCustomNode::waitForSubscription(uint32_t timeoutMs) {
+bool MatterInit::waitForSubscription(uint32_t timeoutMs) {
     uint32_t start = millis();
 
     // Phase 1: Wait for Thread connectivity.
@@ -349,7 +352,7 @@ bool MatterCustomNode::waitForSubscription(uint32_t timeoutMs) {
 // ── waitForDirtyDrain() ──────────────────────────────────────────────────────
 // Phase 3: Poll GetNumDirtySubscriptions() on the CHIP thread until all
 // pending attribute reports have been sent. Call AFTER attribute setters.
-bool MatterCustomNode::waitForDirtyDrain(uint32_t drainMs) {
+bool MatterInit::waitForDirtyDrain(uint32_t drainMs) {
     uint32_t drainStart = millis();
     while (millis() - drainStart < drainMs) {
         chip::DeviceLayer::PlatformMgr().ScheduleWork(_checkDirtyWork, 0);
@@ -365,7 +368,7 @@ bool MatterCustomNode::waitForDirtyDrain(uint32_t drainMs) {
 // Convenience wrapper: waitForSubscription + waitForDirtyDrain.
 // Use the split API (waitForSubscription / waitForDirtyDrain) directly when
 // attributes should only be updated after subscription is confirmed.
-bool MatterCustomNode::waitForReportsDelivered(uint32_t timeoutMs) {
+bool MatterInit::waitForReportsDelivered(uint32_t timeoutMs) {
     if (!waitForSubscription(timeoutMs)) return false;
     return waitForDirtyDrain(5000);
 }

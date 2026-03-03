@@ -5,7 +5,7 @@
 #ifdef CONFIG_ESP_MATTER_ENABLE_DATA_MODEL
 
 #include "MatterSoilSensor.h"
-#include "MatterCustom.h"
+#include "MatterInit.h"
 #include <lib/core/TLV.h>
 
 using namespace esp_matter;

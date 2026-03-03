@@ -4,13 +4,13 @@
 // No dependency on the high-level Matter.h wrapper; uses MatterCustom + direct
 // esp_matter SDK calls throughout.
 //
-// Hardware (ESP32-H2 SuperMini):
-//   GPIO 1 (ADC1_CH0) — capacitive soil-moisture sensor
-//   GPIO 2 (ADC1_CH1) — battery voltage via 1:1 resistor divider
-//   GPIO 3            — NPN transistor base (HIGH = sensors powered on)
-//   GPIO 4 (SDA) / GPIO 5 (SCL) — I2C bus
-//     0x44 — SHT4x  (ambient temperature + humidity)
-//     0x23 — BH1750 (ambient light, lux)
+// Hardware (ESP32-H2 SuperMini) — pins configurable via platformio.ini build flags:
+//   SOIL_MOISTURE_PIN (ADC1_CH0) — capacitive soil-moisture sensor
+//   BATTERY_ADC_PIN   (ADC1_CH1) — battery voltage via 1:1 resistor divider
+//   SENSOR_PWR_PIN               — NPN transistor base (HIGH = sensors powered on)
+//   I2C_SDA_PIN / I2C_SCL_PIN    — I2C bus
+//     I2C_ADDR_SHT4X — SHT4x  (ambient temperature + humidity)
+//     I2C_ADDR_BH1750 — BH1750 (ambient light, lux)
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -21,7 +21,7 @@
 #include <openthread/thread.h>
 #endif
 
-#include "MatterCustom.h"
+#include "MatterInit.h"
 #include "MatterTempSensor.h"
 #include "MatterAmbientHumidity.h"
 #include "MatterLightSensor.h"
@@ -31,6 +31,27 @@
 #ifndef SOIL_MOISTURE_PIN
 #define SOIL_MOISTURE_PIN 1
 #endif
+#ifndef BATTERY_ADC_PIN
+#define BATTERY_ADC_PIN 2
+#endif
+#ifndef SENSOR_PWR_PIN
+#define SENSOR_PWR_PIN 3
+#endif
+#ifndef I2C_SDA_PIN
+#define I2C_SDA_PIN 4
+#endif
+#ifndef I2C_SCL_PIN
+#define I2C_SCL_PIN 5
+#endif
+#ifndef I2C_ADDR_SHT4X
+#define I2C_ADDR_SHT4X 0x44
+#endif
+#ifndef I2C_ADDR_BH1750
+#define I2C_ADDR_BH1750 0x23
+#endif
+#ifndef ACTION_BUTTON_PIN
+#define ACTION_BUTTON_PIN 10
+#endif
 #ifndef ICD_WAKE_INTERVAL_S
 #define ICD_WAKE_INTERVAL_S 3600  // 1 hour; mirrors CONFIG_ICD_IDLE_MODE_INTERVAL_SEC
 #endif
@@ -38,18 +59,7 @@
 #define COMMISSIONING_GRACE_MS 30000  // 10s stay-awake after first commissioning
 #endif
 
-// ─── Hardware constants ──────────────────────────────────────────────────────
-static constexpr uint8_t     PIN_BATTERY_ADC  = 2;
-static constexpr gpio_num_t  PIN_SENSOR_PWR   = GPIO_NUM_3;  // NPN base — HIGH=sensors on
-static constexpr uint8_t     PIN_I2C_SDA      = 4;
-static constexpr uint8_t     PIN_I2C_SCL      = 5;
-static constexpr uint8_t  I2C_ADDR_SHT4X   = 0x44;
-static constexpr uint8_t  I2C_ADDR_BH1750  = 0x23;
-
-// Action button — GPIO 10 (dedicated PCB button, active-LOW with internal pull-up).
-// Single press: start 5-second confirmation window, then force sensor read.
-// Second press within the window: decommission (factory reset).
-static constexpr uint8_t  ACTION_BUTTON_PIN        = 10;
+// Action button confirmation window (ms).
 static constexpr uint32_t ACTION_CONFIRM_WINDOW_MS = 5000;
 
 // Battery voltage limits (mV) for a single-cell LiPo, 1:1 divider on ADC.
@@ -180,7 +190,7 @@ static double readSoilMoisture() {
 }
 
 static uint8_t readBatteryPercent() {
-    uint16_t raw = analogRead(PIN_BATTERY_ADC);
+    uint16_t raw = analogRead(BATTERY_ADC_PIN);
     float adc_mv  = raw * ADC_FULL_MV / 4095.0f;
     float vbat_mv = adc_mv * 2.0f;  // 1:1 divider → actual Vbat = 2× ADC voltage
     gBatteryMv = static_cast<uint32_t>(vbat_mv);  // store for BatVoltage attribute
@@ -208,10 +218,10 @@ static T median3(T a, T b, T c) {
 void setup() {
     gWakeStartMs = millis();  // Record wake time for end-of-cycle log
 
-    // Power on sensors immediately via NPN transistor on GPIO 3.
+    // Power on sensors immediately via NPN transistor on SENSOR_PWR_PIN.
     // Sensors stabilize while the Matter stack initializes below (~3–10 s).
-    pinMode(PIN_SENSOR_PWR, OUTPUT);
-    digitalWrite(PIN_SENSOR_PWR, HIGH);
+    pinMode(static_cast<gpio_num_t>(SENSOR_PWR_PIN), OUTPUT);
+    digitalWrite(static_cast<gpio_num_t>(SENSOR_PWR_PIN), HIGH);
     gSensorPowerOnMs = millis();
 
     Serial.begin(115200);
@@ -248,13 +258,13 @@ void loop() {
         analogSetAttenuation(ADC_11db);
 
         // I2C
-        Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+        Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
         Wire.setClock(100000);  // 100 kHz standard mode — explicit, deterministic for both sensors
         bh1750Init();
         delay(200);  // BH1750 first measurement settling
 
         // Matter node
-        if (!MatterCustomNode::init()) {
+        if (!MatterInit::init()) {
             Serial.println("ERROR: Matter node init failed — halting");
             while (true) delay(1000);
         }
@@ -266,7 +276,7 @@ void loop() {
         gSoilSensor.begin(0.0);
 
         // Start Matter / OpenThread stack.
-        if (!MatterCustomNode::start()) {
+        if (!MatterInit::start()) {
             Serial.println("ERROR: Matter stack start failed — halting");
             while (true) delay(1000);
         }
@@ -294,7 +304,7 @@ void loop() {
     // Visited once on fresh boot only (light-sleep wakeup goes IDLE_WAIT directly).
     // If already commissioned (power-cycle of provisioned device) → skip grace.
     case State::MATTER_READY: {
-        if (MatterCustomNode::isCommissioned()) {
+        if (MatterInit::isCommissioned()) {
             if (gWakeReason == ESP_SLEEP_WAKEUP_EXT1) {
                 // Button woke us from deep sleep — handle as short/long press.
                 Serial.println("Woke from button press — entering ACTION_BUTTON_PRESSED.");
@@ -314,7 +324,7 @@ void loop() {
     // Wait for BLE commissioning then Thread network join.
     // Once both are satisfied, enter the post-commissioning grace period.
     case State::MATTER_DECOMMISSIONED: {
-        if (!MatterCustomNode::isCommissioned()) {
+        if (!MatterInit::isCommissioned()) {
             static uint32_t lastPrint = 0;
             if (millis() - lastPrint >= 10000) {
                 lastPrint = millis();
@@ -325,7 +335,7 @@ void loop() {
             break;
         }
 
-        if (!MatterCustomNode::isConnected()) {
+        if (!MatterInit::isConnected()) {
             static uint32_t lastPrint = 0;
             if (millis() - lastPrint >= 5000) {
                 lastPrint = millis();
@@ -348,7 +358,7 @@ void loop() {
         if (graceEnteredAt == 0) graceEnteredAt = millis();
 
         // Arm the 5-minute timer once kCommissioningComplete fires.
-        if (stayAwakeUntil == 0 && MatterCustomNode::getAndClearJustCommissioned()) {
+        if (stayAwakeUntil == 0 && MatterInit::getAndClearJustCommissioned()) {
             stayAwakeUntil = millis() + COMMISSIONING_GRACE_MS;
             Serial.printf("Commissioning done — holding awake for %u s\n",
                           COMMISSIONING_GRACE_MS / 1000);
@@ -396,7 +406,7 @@ void loop() {
             gActionPressedAt = 0; 
             gActionDecommStart = 0;
             Serial.println("Action button: held 5 s — decommissioning…");
-            MatterCustomNode::decommission();
+            MatterInit::decommission();
             delay(500);
             gState = State::MATTER_DECOMMISSIONED;
             break;
@@ -439,13 +449,13 @@ void loop() {
         // BH1750 READ follows SHT4x READ — READ→READ transition is always clean.
         // (Reversed order fixes READ→WRITE back-to-back stall on ESP32-H2 Wire.)
         if (!sht4xRead(gTempReadings[gReadCount], gHumReadings[gReadCount])) {
-            log_w("SHT4x read failed at sample %u — using previous values", gReadCount);
+            Serial.printf("SHT4x read failed at sample %u — using previous values\n", gReadCount);
             gTempReadings[gReadCount] = gTempC;
             gHumReadings[gReadCount]  = gHumidityPct;
         }
 
         if (!bh1750Read(gLuxReadings[gReadCount])) {
-            log_w("BH1750 read failed at sample %u — using previous value", gReadCount);
+            Serial.printf("BH1750 read failed at sample %u — using previous value\n", gReadCount);
             gLuxReadings[gReadCount] = gLux;
         }
         
@@ -468,8 +478,8 @@ void loop() {
             gSoilPct     = median3(gSoilReadings[0], gSoilReadings[1], gSoilReadings[2]);
             gBatteryPct  = median3(gBatReadings[0],   gBatReadings[1],   gBatReadings[2]);
             gBatteryMv   = median3(gBatMvReadings[0], gBatMvReadings[1], gBatMvReadings[2]);
-            log_i("Sensors (median/3) → T=%.2f°C  RH=%.1f%%  Lux=%.1f  Soil=%.1f%%  Bat=%u%%",
-                  gTempC, gHumidityPct, gLux, gSoilPct, gBatteryPct);
+            Serial.printf("Sensors (median/3) → T=%.2f°C  RH=%.1f%%  Lux=%.1f  Soil=%.1f%%  Bat=%u%%\n",
+                          gTempC, gHumidityPct, gLux, gSoilPct, gBatteryPct);
             gState = State::DATA_PUSH;
         }
         break;
@@ -488,8 +498,8 @@ void loop() {
         // Updating attributes before Thread connects triggers immediate failed CASE
         // session attempts, corrupting retry state before the wait begins.
         // 90 s covers: CIP Check-In round-trip + CASE establishment + MRP retransmits.
-        if (!MatterCustomNode::waitForSubscription(90000)) {
-            log_w("DATA_PUSH: no subscription — sleeping anyway");
+        if (!MatterInit::waitForSubscription(90000)) {
+            Serial.println("DATA_PUSH: no subscription — sleeping anyway");
             gState = State::POWER_SAVE;
             break;
         }
@@ -513,14 +523,14 @@ void loop() {
             lastSoil = gSoilPct;
         }
         if (abs((int)gBatteryPct - (int)lastBat) >= BATTERY_THRESHOLD) {
-            MatterCustomNode::setBatteryPercent(gBatteryPct);
-            MatterCustomNode::setBatteryVoltage(gBatteryMv);
+            MatterInit::setBatteryPercent(gBatteryPct);
+            MatterInit::setBatteryVoltage(gBatteryMv);
             lastBat = gBatteryPct;
         }
 
         // Step 3: Drain dirty reports (subscription already active — should be fast).
-        if (!MatterCustomNode::waitForDirtyDrain(5000)) {
-            log_w("DATA_PUSH: drain timeout — sleeping anyway");
+        if (!MatterInit::waitForDirtyDrain(5000)) {
+            Serial.println("DATA_PUSH: drain timeout — sleeping anyway");
         }
 
         gState = State::POWER_SAVE;
@@ -536,8 +546,8 @@ void loop() {
         // If the commissioning window is open (e.g. kFabricRemoved fired while we
         // were mid-cycle and eventCB re-opened it), do NOT sleep — a sleep here
         // would lock out commissioning for up to ICD_WAKE_INTERVAL_S.
-        if (MatterCustomNode::isCommissioningWindowOpen()) {
-            log_i("Commissioning window open — staying awake for recommissioning");
+        if (MatterInit::isCommissioningWindowOpen()) {
+            Serial.println("Commissioning window open — staying awake for recommissioning");
             gState = State::MATTER_DECOMMISSIONED;
             break;
         }
@@ -549,27 +559,27 @@ void loop() {
         static uint32_t icdWaitStart = 0;
         if (icdWaitStart == 0) icdWaitStart = millis();
 
-        if (!MatterCustomNode::isIcdIdle()) {
+        if (!MatterInit::isIcdIdle()) {
             static uint32_t lastIcdLog = 0;
             if (millis() - lastIcdLog >= 5000) {
                 lastIcdLog = millis();
-                log_i("POWER_SAVE: waiting for ICD idle... (%lu s)",
-                      (millis() - icdWaitStart) / 1000);
+                Serial.printf("POWER_SAVE: waiting for ICD idle... (%lu s)\n",
+                              (millis() - icdWaitStart) / 1000);
             }
             if (millis() - icdWaitStart < 30000) break;  // yield — check next loop
-            log_w("POWER_SAVE: ICD idle timeout — sleeping anyway");
+            Serial.println("POWER_SAVE: ICD idle timeout — sleeping anyway");
         } else {
             Serial.println("ICD idle — entering deep sleep.");
         }
         icdWaitStart = 0;  // reset so next wakeup cycle starts fresh
 
         // Power off sensors before entering deep sleep.
-        digitalWrite(PIN_SENSOR_PWR, LOW);
+        digitalWrite(static_cast<gpio_num_t>(SENSOR_PWR_PIN), LOW);
 
         // Release I2C bus and float SDA/SCL to prevent leakage current during sleep.
         Wire.end();
-        pinMode(PIN_I2C_SDA, INPUT);
-        pinMode(PIN_I2C_SCL, INPUT);
+        pinMode(I2C_SDA_PIN, INPUT);
+        pinMode(I2C_SCL_PIN, INPUT);
 
         Serial.printf("Cycle complete — active for %lu ms. Entering deep sleep for %d s…\n",
               millis() - gWakeStartMs, ICD_WAKE_INTERVAL_S);
