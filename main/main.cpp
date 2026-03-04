@@ -254,7 +254,9 @@ void loop() {
     // Detect fresh button press from any state — transition to ACTION_BUTTON_PRESSED.
     if (gState != State::ACTION_BUTTON_PRESSED &&
         digitalRead(ACTION_BUTTON_PIN) == LOW) {
-        gState = State::ACTION_BUTTON_PRESSED;
+        if(MatterInit::isCommissioned()) {
+            gState = State::ACTION_BUTTON_PRESSED;
+        }
     }
     switch (gState) {
 
