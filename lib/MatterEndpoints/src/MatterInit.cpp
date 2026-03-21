@@ -129,17 +129,22 @@ bool MatterInit::init() {
         ps_config.order  = 0;
         // kBattery feature (mandatory attrs: BatChargeLevel, BatReplacementNeeded, BatReplaceability)
         cluster_t *ps_cluster = power_source::create(root_ep, &ps_config, CLUSTER_FLAG_SERVER,
-                                                     static_cast<uint32_t>(PowerSource::Feature::kRechargeable));
+                                                     static_cast<uint32_t>(PowerSource::Feature::kBattery));
         if (ps_cluster == nullptr) {
             log_w("MatterCustom: failed to create PowerSource cluster on EP0");
         } else {
-            // BatPercentRemaining is optional and not added by the battery feature automatically.
-            // Add it explicitly so we can report remaining capacity (Matter range: 0–200).
+            // BatPercentRemaining and BatVoltage are optional — add explicitly.
             esp_matter::cluster::power_source::attribute::create_bat_percent_remaining(ps_cluster, 0, 0, 200);
             esp_matter::cluster::power_source::attribute::create_bat_voltage(ps_cluster, 0, 0, 65535);
-            esp_matter::cluster::power_source::attribute::create_bat_charge_state(
-                ps_cluster, static_cast<uint8_t>(PowerSource::BatChargeStateEnum::kUnknown));
-            log_i("MatterCustom: PowerSource cluster + BatPercentRemaining + BatVoltage + BatChargeState added to EP0");
+
+            // Rechargeable feature: adds kRechargeable to the feature map and creates
+            // BatChargeState + BatFunctionalWhileCharging attributes.
+            esp_matter::cluster::power_source::feature::rechargeable::config_t rechargeable_cfg;
+            rechargeable_cfg.bat_charge_state = static_cast<uint8_t>(PowerSource::BatChargeStateEnum::kUnknown);
+            rechargeable_cfg.bat_functional_while_charging = true;
+            esp_matter::cluster::power_source::feature::rechargeable::add(ps_cluster, &rechargeable_cfg);
+
+            log_i("MatterCustom: PowerSource cluster + BatPercentRemaining + BatVoltage + Rechargeable feature added to EP0");
         }
     }
 
