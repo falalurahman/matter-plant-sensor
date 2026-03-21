@@ -35,7 +35,10 @@
 #define BATTERY_ADC_PIN 2
 #endif
 #ifndef SENSOR_PWR_PIN
-#define SENSOR_PWR_PIN 3
+#define SENSOR_PWR_PIN 11
+#endif
+#ifndef CHARGE_DETECT_PIN
+#define CHARGE_DETECT_PIN 3
 #endif
 #ifndef I2C_SDA_PIN
 #define I2C_SDA_PIN 4
@@ -100,6 +103,7 @@ static float    gLux                = 0.0f;
 static double   gSoilPercent        = 0.0;
 static uint8_t  gBatteryPercent     = 0;
 static uint32_t gBatteryMillivolts  = 0;   // actual Vbat in mV (ADC × 2, 1:1 divider)
+static bool     gIsCharging         = false;
 
 // ─── Timing ──────────────────────────────────────────────────────────────────
 static uint32_t gWakeStartMillis             = 0;  // millis() at start of setup() for cycle time logging
@@ -206,6 +210,12 @@ static uint8_t readBatteryPercent() {
                            (BATTERY_MAX_MILLIVOLTS - BATTERY_MIN_MILLIVOLTS) * 100.0f;
     Serial.printf("BAT_PERCENT: (ADC pin: %lu mV, battery: %.1f mV)\n", adcMillivolts, batteryMillivolts);
     return static_cast<uint8_t>(constrain(batteryPercent, 0.0f, 100.0f));
+}
+
+static bool readChargeDetect() {
+    uint32_t mv = analogReadMilliVolts(CHARGE_DETECT_PIN);
+    Serial.printf("CHARGE_DETECT: %lu mV\n", mv);
+    return mv > 2000;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -470,6 +480,7 @@ void loop() {
         gSoilMoistureReadings[gSampleCount]     = readSoilMoisture();
         gBatteryReadings[gSampleCount]           = readBatteryPercent();  // also sets gBatteryMillivolts
         gBatteryMillivoltReadings[gSampleCount]  = gBatteryMillivolts;
+        gIsCharging = readChargeDetect();
 
         gSampleCount++;
 
@@ -501,6 +512,7 @@ void loop() {
         static float   lastLux          = -1.0f;
         static double  lastSoilMoisture = -1.0;
         static uint8_t lastBattery      = 255;
+        static bool    lastCharging     = false;
 
         // Step 1: Wait for Thread + subscription BEFORE touching attributes.
         // Updating attributes before Thread connects triggers immediate failed CASE
@@ -534,6 +546,10 @@ void loop() {
             MatterInit::setBatteryPercent(gBatteryPercent);
             MatterInit::setBatteryVoltage(gBatteryMillivolts);
             lastBattery = gBatteryPercent;
+        }
+        if (gIsCharging != lastCharging) {
+            MatterInit::setBatteryChargeState(gIsCharging);
+            lastCharging = gIsCharging;
         }
 
         // Step 3: Drain dirty reports (subscription already active — should be fast).

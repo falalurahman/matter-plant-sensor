@@ -55,6 +55,8 @@ public:
     static bool setBatteryPercent(uint8_t percent);
     // Update BatVoltage on EP0 (millivolts, actual Vbat from ADC).
     static bool setBatteryVoltage(uint32_t mv);
+    // Update BatChargeState on EP0 (true = kIsCharging, false = kIsNotCharging).
+    static bool setBatteryChargeState(bool isCharging);
 
     // ── Pre-sleep report guarantee ───────────────────────────────────────────
     // Block until attribute reports have been delivered to all subscribed
