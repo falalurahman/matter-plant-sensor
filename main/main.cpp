@@ -197,8 +197,9 @@ static bool bh1750Read(float &lux) {
 // ── ADC helpers ───────────────────────────────────────────────────────────────
 static double readSoilMoisture() {
     uint16_t raw = analogRead(SOIL_MOISTURE_PIN);
-    // Capacitive sensor: dry = high ADC (4095), wet = low ADC (0).  Invert.
-    double pct = (4095 - raw) / 4095.0 * 100.0;
+    // Capacitive sensor: dry = high ADC, wet = low ADC.  Calibrated via build flags.
+    double pct = (double)(SOIL_MOISTURE_ADC_DRY - raw) /
+                 (double)(SOIL_MOISTURE_ADC_DRY - SOIL_MOISTURE_ADC_WET) * 100.0;
     return constrain(pct, 0.0, 100.0);
 }
 
