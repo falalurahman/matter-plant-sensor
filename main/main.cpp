@@ -60,10 +60,8 @@
 static constexpr uint32_t ACTION_CONFIRM_WINDOW_MS = 5000;
 
 // Battery voltage limits (mV) for a single-cell LiPo, 1:1 divider on ADC.
-// ADC attenuation 11 dB → full-scale ~3100 mV.  Divider halves Vbat.
-static constexpr float BATTERY_MAX_MILLIVOLTS     = 4200.0f;
-static constexpr float BATTERY_MIN_MILLIVOLTS     = 3000.0f;
-static constexpr float ADC_FULL_SCALE_MILLIVOLTS  = 3100.0f;
+static constexpr float BATTERY_MAX_MILLIVOLTS = 4200.0f;
+static constexpr float BATTERY_MIN_MILLIVOLTS = 3000.0f;
 
 // Minimum change required before pushing a Matter attribute update.
 static constexpr double  TEMPERATURE_THRESHOLD_CELSIUS = 0.1;   // °C
@@ -201,12 +199,12 @@ static double readSoilMoisture() {
 }
 
 static uint8_t readBatteryPercent() {
-    uint16_t raw = analogRead(BATTERY_ADC_PIN);
-    float adcMillivolts     = raw * ADC_FULL_SCALE_MILLIVOLTS / 4095.0f;
-    float batteryMillivolts = adcMillivolts * 2.0f;  // 1:1 divider → actual Vbat = 2× ADC voltage
-    gBatteryMillivolts = static_cast<uint32_t>(batteryMillivolts);  // store for BatVoltage attribute
+    uint32_t adcMillivolts  = analogReadMilliVolts(BATTERY_ADC_PIN);  // eFuse-calibrated; no manual scaling needed
+    float batteryMillivolts = adcMillivolts * 2.0f;  // 1:1 divider → actual Vbat = 2× ADC pin voltage
+    gBatteryMillivolts = static_cast<uint32_t>(batteryMillivolts);
     float batteryPercent = (batteryMillivolts - BATTERY_MIN_MILLIVOLTS) /
                            (BATTERY_MAX_MILLIVOLTS - BATTERY_MIN_MILLIVOLTS) * 100.0f;
+    Serial.printf("BAT_PERCENT: (ADC pin: %lu mV, battery: %.1f mV)\n", adcMillivolts, batteryMillivolts);
     return static_cast<uint8_t>(constrain(batteryPercent, 0.0f, 100.0f));
 }
 
