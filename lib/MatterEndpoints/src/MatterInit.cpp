@@ -129,7 +129,7 @@ bool MatterInit::init() {
         ps_config.order  = 0;
         // kBattery feature (mandatory attrs: BatChargeLevel, BatReplacementNeeded, BatReplaceability)
         cluster_t *ps_cluster = power_source::create(root_ep, &ps_config, CLUSTER_FLAG_SERVER,
-                                                     static_cast<uint32_t>(PowerSource::Feature::kBattery));
+                                                     static_cast<uint32_t>(PowerSource::Feature::kRechargeable));
         if (ps_cluster == nullptr) {
             log_w("MatterCustom: failed to create PowerSource cluster on EP0");
         } else {
@@ -137,7 +137,9 @@ bool MatterInit::init() {
             // Add it explicitly so we can report remaining capacity (Matter range: 0–200).
             esp_matter::cluster::power_source::attribute::create_bat_percent_remaining(ps_cluster, 0, 0, 200);
             esp_matter::cluster::power_source::attribute::create_bat_voltage(ps_cluster, 0, 0, 65535);
-            log_i("MatterCustom: PowerSource cluster + BatPercentRemaining + BatVoltage added to EP0");
+            esp_matter::cluster::power_source::attribute::create_bat_charge_state(
+                ps_cluster, static_cast<uint8_t>(PowerSource::BatChargeStateEnum::kUnknown));
+            log_i("MatterCustom: PowerSource cluster + BatPercentRemaining + BatVoltage + BatChargeState added to EP0");
         }
     }
 
@@ -277,6 +279,25 @@ bool MatterInit::setBatteryPercent(uint8_t percent) {
         attribute::update(0, kPowerSourceCluster, kBatChargeLevelAttr, &lvlVal);
     }
     return true;
+}
+
+// ── Battery charge state update ──────────────────────────────────────────────
+bool MatterInit::setBatteryChargeState(bool isCharging) {
+    if (!_started) return false;
+    constexpr uint32_t kPowerSourceCluster = PowerSource::Id;
+    constexpr uint32_t kBatChargeStateAttr = PowerSource::Attributes::BatChargeState::Id;
+    endpoint_t *root_ep = endpoint::get(_node, 0);
+    if (!root_ep) return false;
+    cluster_t *ps_cluster = cluster::get(root_ep, kPowerSourceCluster);
+    if (!ps_cluster) return false;
+    attribute_t *attr = attribute::get(ps_cluster, kBatChargeStateAttr);
+    if (!attr) return false;
+    esp_matter_attr_val_t val = esp_matter_invalid(NULL);
+    attribute::get_val(attr, &val);
+    val.val.u8 = static_cast<uint8_t>(isCharging
+        ? PowerSource::BatChargeStateEnum::kIsCharging
+        : PowerSource::BatChargeStateEnum::kIsNotCharging);
+    return attribute::update(0, kPowerSourceCluster, kBatChargeStateAttr, &val) == ESP_OK;
 }
 
 // ── Battery voltage update ───────────────────────────────────────────────────
