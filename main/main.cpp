@@ -200,6 +200,7 @@ static double readSoilMoisture() {
     // Capacitive sensor: dry = high ADC, wet = low ADC.  Calibrated via build flags.
     double pct = (double)(SOIL_MOISTURE_ADC_DRY - raw) /
                  (double)(SOIL_MOISTURE_ADC_DRY - SOIL_MOISTURE_ADC_WET) * 100.0;
+    Serial.printf("SOIL_MOISTURE: %lu (ADC), %.1f%%\n", raw, pct);
     return constrain(pct, 0.0, 100.0);
 }
 
@@ -209,7 +210,6 @@ static uint8_t readBatteryPercent() {
     gBatteryMillivolts = static_cast<uint32_t>(batteryMillivolts);
     float batteryPercent = (batteryMillivolts - BATTERY_MIN_MILLIVOLTS) /
                            (BATTERY_MAX_MILLIVOLTS - BATTERY_MIN_MILLIVOLTS) * 100.0f;
-    Serial.printf("BAT_PERCENT: (ADC pin: %lu mV, battery: %.1f mV)\n", adcMillivolts, batteryMillivolts);
     return static_cast<uint8_t>(constrain(batteryPercent, 0.0f, 100.0f));
 }
 
