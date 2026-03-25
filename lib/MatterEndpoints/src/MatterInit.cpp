@@ -4,6 +4,8 @@
 #ifdef CONFIG_ESP_MATTER_ENABLE_DATA_MODEL
 
 #include "MatterInit.h"
+#include "MatterDiagnostics.h"
+#include <esp_matter_ota.h>
 #include <app/server/Server.h>
 #include <app/InteractionModelEngine.h>
 #include <platform/ConnectivityManager.h>
@@ -171,6 +173,23 @@ bool MatterInit::init() {
             log_i("MatterCustom: ICD Management cluster added to EP0 (LIT+CIP+UAT features)");
         }
     }
+
+    // Add General Diagnostics, Diagnostic Logs, and Thread Network Diagnostics clusters to EP0.
+    MatterDiagnostics::begin(_node);
+
+    // Register the OTA Software Update Requestor cluster on EP0.
+    // esp_matter_ota_requestor_start() is called automatically by the framework
+    // on the kDnssdInitialized event — no manual invocation needed here.
+#if CONFIG_ENABLE_OTA_REQUESTOR
+    {
+        esp_err_t err = esp_matter_ota_requestor_init();
+        if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED) {
+            log_w("MatterCustom: OTA requestor init failed: %d", err);
+        } else {
+            log_i("MatterCustom: OTA requestor cluster added to EP0");
+        }
+    }
+#endif
 
     _initialized = true;
     log_i("MatterCustom: node initialized");
