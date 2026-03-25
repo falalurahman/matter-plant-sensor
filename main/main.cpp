@@ -22,6 +22,10 @@
 #endif
 
 #include "MatterInit.h"
+#include "MatterDiagnostics.h"
+#if CONFIG_ENABLE_OTA_REQUESTOR
+#include <app/clusters/ota-requestor/OTARequestorInterface.h>
+#endif
 #include "MatterTempSensor.h"
 #include "MatterAmbientHumidity.h"
 #include "MatterLightSensor.h"
@@ -92,6 +96,8 @@ enum class State : uint8_t {
     IDLE_WAIT,
     SENSOR_READ,
     DATA_PUSH,
+    OTA_CHECK,   // fire query at start of cycle; proceed to sensors immediately
+    OTA_WAIT,    // after data push: stay awake only if a download is active
     POWER_SAVE,
 };
 static State gState = State::SYSTEM_BOOT;
@@ -200,7 +206,7 @@ static double readSoilMoisture() {
     // Capacitive sensor: dry = high ADC, wet = low ADC.  Calibrated via build flags.
     double pct = (double)(SOIL_MOISTURE_ADC_DRY - raw) /
                  (double)(SOIL_MOISTURE_ADC_DRY - SOIL_MOISTURE_ADC_WET) * 100.0;
-    Serial.printf("SOIL_MOISTURE: %lu (ADC), %.1f%%\n", raw, pct);
+    MatterDiagnostics::log("SOIL_MOISTURE: %lu (ADC), %.1f%%\n", raw, pct);
     return constrain(pct, 0.0, 100.0);
 }
 
@@ -215,7 +221,7 @@ static uint8_t readBatteryPercent() {
 
 static bool readChargeDetect() {
     uint32_t mv = analogReadMilliVolts(CHARGE_DETECT_PIN);
-    Serial.printf("CHARGE_DETECT: %lu mV\n", mv);
+    MatterDiagnostics::log("CHARGE_DETECT: %lu mV\n", mv);
     return mv > 2000;
 }
 
@@ -247,10 +253,10 @@ void setup() {
 
     Serial.begin(115200);
     gBootCount++;
-    Serial.printf("\n=== Plant Sensor boot #%lu ===\n", gBootCount);
+    MatterDiagnostics::log("\n=== Plant Sensor boot #%lu ===\n", gBootCount);
 
     gWakeReason = esp_sleep_get_wakeup_cause();
-    Serial.printf("Wakeup reason: %d\n", (int)gWakeReason);
+    MatterDiagnostics::log("Wakeup reason: %d\n", (int)gWakeReason);
 
     // Configure the action button before the first loop() iteration so that
     // the top-of-loop digitalRead() check never sees a floating pin.
@@ -288,7 +294,7 @@ void loop() {
 
         // Matter node
         if (!MatterInit::init()) {
-            Serial.println("ERROR: Matter node init failed — halting");
+            MatterDiagnostics::logln("ERROR: Matter node init failed — halting");
             while (true) delay(1000);
         }
 
@@ -300,7 +306,7 @@ void loop() {
 
         // Start Matter / OpenThread stack.
         if (!MatterInit::start()) {
-            Serial.println("ERROR: Matter stack start failed — halting");
+            MatterDiagnostics::logln("ERROR: Matter stack start failed — halting");
             while (true) delay(1000);
         }
 
@@ -312,13 +318,13 @@ void loop() {
             otInstance *ot = esp_openthread_get_instance();
             if (ot) {
                 otThreadSetChildTimeout(ot, ICD_WAKE_INTERVAL_S * 4);
-                Serial.printf("OpenThread child timeout set to %d s\n",
+                MatterDiagnostics::log("OpenThread child timeout set to %d s\n",
                               ICD_WAKE_INTERVAL_S * 4);
             }
         }
 #endif
 
-        Serial.printf("Wake interval: %d s\n", ICD_WAKE_INTERVAL_S);
+        MatterDiagnostics::log("Wake interval: %d s\n", ICD_WAKE_INTERVAL_S);
         gState = State::MATTER_READY;
         break;
     }
@@ -332,13 +338,12 @@ void loop() {
                 // Button woke us from deep sleep — handle as short/long press.
                 // Set gActionPressedAt so the 5-second window starts immediately,
                 // even if the button is released before loop() first runs the case.
-                Serial.println("Woke from button press — entering ACTION_BUTTON_PRESSED.");
+                MatterDiagnostics::logln("Woke from button press — entering ACTION_BUTTON_PRESSED.");
                 gActionPressedAt = millis();
                 gState = State::ACTION_BUTTON_PRESSED;
             } else {
-                Serial.println("Already commissioned — going directly to sensor cycle.");
-                gIdleStart = millis();
-                gState = State::IDLE_WAIT;
+                MatterDiagnostics::logln("Already commissioned — checking for OTA updates first.");
+                gState = State::OTA_CHECK;
             }
         } else {
             gState = State::MATTER_DECOMMISSIONED;
@@ -354,9 +359,9 @@ void loop() {
             static uint32_t lastPrint = 0;
             if (millis() - lastPrint >= 10000) {
                 lastPrint = millis();
-                Serial.println("Waiting for commissioning via BLE…");
-                Serial.printf("  Setup discriminator : %d\n", MATTER_DEVICE_SETUP_DISCRIMINATOR);
-                Serial.printf("  Setup passcode      : %lu\n", (unsigned long)MATTER_DEVICE_SETUP_PASSCODE);
+                MatterDiagnostics::logln("Waiting for commissioning via BLE…");
+                MatterDiagnostics::log("  Setup discriminator : %d\n", MATTER_DEVICE_SETUP_DISCRIMINATOR);
+                MatterDiagnostics::log("  Setup passcode      : %lu\n", (unsigned long)MATTER_DEVICE_SETUP_PASSCODE);
             }
             break;
         }
@@ -365,7 +370,7 @@ void loop() {
             static uint32_t lastPrint = 0;
             if (millis() - lastPrint >= 5000) {
                 lastPrint = millis();
-                Serial.println("Waiting for Thread network connection…");
+                MatterDiagnostics::logln("Waiting for Thread network connection…");
             }
             break;
         }
@@ -383,11 +388,11 @@ void loop() {
         static uint32_t graceEnteredAt = 0;
         if (graceEnteredAt == 0) {
             graceEnteredAt = millis();
-            Serial.println("Commissioning done — waiting for controller subscription...");
+            MatterDiagnostics::logln("Commissioning done — waiting for controller subscription...");
         }
 
         if (MatterInit::hasActiveSubscription()) {
-            Serial.printf("Controller subscribed (%.1fs) — starting sensor cycle.\n",
+            MatterDiagnostics::log("Controller subscribed (%.1fs) — starting sensor cycle.\n",
                           (millis() - graceEnteredAt) / 1000.0f);
             graceEnteredAt = 0;
             gIdleStart = millis();
@@ -397,7 +402,7 @@ void loop() {
 
         // 5-minute fallback in case the controller never subscribes.
         if (millis() - graceEnteredAt >= 300000UL) {
-            Serial.println("Grace timeout — starting sensor cycle anyway.");
+            MatterDiagnostics::logln("Grace timeout — starting sensor cycle anyway.");
             graceEnteredAt = 0;
             gIdleStart = millis();
             gState = State::IDLE_WAIT;
@@ -424,7 +429,7 @@ void loop() {
         if (gActionDecommStart != 0 && millis() - gActionDecommStart >= ACTION_CONFIRM_WINDOW_MS) {
             gActionPressedAt = 0;
             gActionDecommStart = 0;
-            Serial.println("Action button: held 5 s — decommissioning…");
+            MatterDiagnostics::logln("Action button: held 5 s — decommissioning…");
             MatterInit::decommission();
             delay(500);
             gState = State::MATTER_DECOMMISSIONED;
@@ -433,7 +438,7 @@ void loop() {
 
         if (!held && gActionPressedAt != 0 && millis() - gActionPressedAt >= ACTION_CONFIRM_WINDOW_MS) {
             gActionPressedAt = 0;
-            Serial.println("Action button: 5 s window expired — forcing sensor read.");
+            MatterDiagnostics::logln("Action button: 5 s window expired — forcing sensor read.");
             gIdleStart = millis();
             gState     = State::IDLE_WAIT;
         }
@@ -468,13 +473,13 @@ void loop() {
         // BH1750 READ follows SHT4x READ — READ→READ transition is always clean.
         // (Reversed order fixes READ→WRITE back-to-back stall on ESP32-H2 Wire.)
         if (!sht4xRead(gTemperatureReadings[gSampleCount], gHumidityReadings[gSampleCount])) {
-            Serial.printf("SHT4x read failed at sample %u — using previous values\n", gSampleCount);
+            MatterDiagnostics::log("SHT4x read failed at sample %u — using previous values\n", gSampleCount);
             gTemperatureReadings[gSampleCount] = gTemperatureCelsius;
             gHumidityReadings[gSampleCount]    = gHumidityPercent;
         }
 
         if (!bh1750Read(gLuxReadings[gSampleCount])) {
-            Serial.printf("BH1750 read failed at sample %u — using previous value\n", gSampleCount);
+            MatterDiagnostics::log("BH1750 read failed at sample %u — using previous value\n", gSampleCount);
             gLuxReadings[gSampleCount] = gLux;
         }
 
@@ -498,7 +503,7 @@ void loop() {
             gSoilPercent        = median3(gSoilMoistureReadings[0],     gSoilMoistureReadings[1],     gSoilMoistureReadings[2]);
             gBatteryPercent     = median3(gBatteryReadings[0],          gBatteryReadings[1],          gBatteryReadings[2]);
             gBatteryMillivolts  = median3(gBatteryMillivoltReadings[0], gBatteryMillivoltReadings[1], gBatteryMillivoltReadings[2]);
-            Serial.printf("Sensors (median/3) → T=%.2f°C  RH=%.1f%%  Lux=%.1f  Soil=%.1f%%  Bat=%u%%\n",
+            MatterDiagnostics::log("Sensors (median/3) → T=%.2f°C  RH=%.1f%%  Lux=%.1f  Soil=%.1f%%  Bat=%u%%\n",
                           gTemperatureCelsius, gHumidityPercent, gLux, gSoilPercent, gBatteryPercent);
             gState = State::DATA_PUSH;
         }
@@ -520,7 +525,7 @@ void loop() {
         // session attempts, corrupting retry state before the wait begins.
         // 90 s covers: CIP Check-In round-trip + CASE establishment + MRP retransmits.
         if (!MatterInit::waitForSubscription(90000)) {
-            Serial.println("DATA_PUSH: no subscription — sleeping anyway");
+            MatterDiagnostics::logln("DATA_PUSH: no subscription — sleeping anyway");
             gState = State::POWER_SAVE;
             break;
         }
@@ -555,9 +560,72 @@ void loop() {
 
         // Step 3: Drain dirty reports (subscription already active — should be fast).
         if (!MatterInit::waitForDirtyDrain(5000)) {
-            Serial.println("DATA_PUSH: drain timeout — sleeping anyway");
+            MatterDiagnostics::logln("DATA_PUSH: drain timeout — sleeping anyway");
         }
 
+        gState = State::OTA_WAIT;
+        break;
+    }
+
+    // ── OTA_CHECK ────────────────────────────────────────────────────────────
+    // Fires an OTA query as soon as the requestor is available (DNS-SD init),
+    // then immediately proceeds to sensor reading — no waiting for the result.
+    // The query runs in the background while sensors are read and data is pushed.
+    // OTA_WAIT (after DATA_PUSH) checks whether a download actually started.
+    case State::OTA_CHECK: {
+#if CONFIG_ENABLE_OTA_REQUESTOR
+        static uint32_t otaCheckStart = 0;
+        if (otaCheckStart == 0) {
+            otaCheckStart = millis();
+            MatterDiagnostics::logln("OTA_CHECK: waiting for OTA requestor...");
+        }
+
+        chip::OTARequestorInterface *requestor = chip::GetRequestorInstance();
+        if (requestor == nullptr) {
+            // Requestor not yet ready — wait up to 30 s; skip if still not ready
+            if (millis() - otaCheckStart >= 30000) {
+                MatterDiagnostics::logln("OTA_CHECK: requestor not ready — skipping");
+                otaCheckStart = 0;
+                gIdleStart = millis();
+                gState = State::IDLE_WAIT;
+            }
+            break;
+        }
+
+        MatterDiagnostics::logln("OTA_CHECK: triggering query — proceeding to sensors");
+        requestor->TriggerImmediateQuery();
+        otaCheckStart = 0;
+#endif
+        gIdleStart = millis();
+        gState = State::IDLE_WAIT;
+        break;
+    }
+
+    // ── OTA_WAIT ─────────────────────────────────────────────────────────────
+    // Reached after DATA_PUSH. If the OTA query (fired in OTA_CHECK) found an
+    // update, the requestor will be in kDownloading or kApplying by now.
+    // Stay awake until the device reboots; otherwise go straight to sleep.
+    case State::OTA_WAIT: {
+#if CONFIG_ENABLE_OTA_REQUESTOR
+        using OTAStateEnum =
+            chip::app::Clusters::OtaSoftwareUpdateRequestor::OTAUpdateStateEnum;
+
+        chip::OTARequestorInterface *requestor = chip::GetRequestorInstance();
+        if (requestor != nullptr) {
+            auto otaState = requestor->GetCurrentUpdateState();
+            if (otaState == OTAStateEnum::kDownloading ||
+                otaState == OTAStateEnum::kApplying) {
+                static uint32_t lastOtaLog = 0;
+                if (millis() - lastOtaLog >= 5000) {
+                    lastOtaLog = millis();
+                    MatterDiagnostics::log("OTA_WAIT: update in progress (state=%d)...\n",
+                                  static_cast<int>(otaState));
+                }
+                break;  // stay awake; device auto-reboots when apply completes
+            }
+        }
+        MatterDiagnostics::logln("OTA_WAIT: no active download — entering deep sleep");
+#endif
         gState = State::POWER_SAVE;
         break;
     }
@@ -572,7 +640,7 @@ void loop() {
         // were mid-cycle and eventCB re-opened it), do NOT sleep — a sleep here
         // would lock out commissioning for up to ICD_WAKE_INTERVAL_S.
         if (MatterInit::isCommissioningWindowOpen()) {
-            Serial.println("Commissioning window open — staying awake for recommissioning");
+            MatterDiagnostics::logln("Commissioning window open — staying awake for recommissioning");
             gState = State::MATTER_DECOMMISSIONED;
             break;
         }
@@ -588,13 +656,13 @@ void loop() {
             static uint32_t lastIcdLog = 0;
             if (millis() - lastIcdLog >= 5000) {
                 lastIcdLog = millis();
-                Serial.printf("POWER_SAVE: waiting for ICD idle... (%lu s)\n",
+                MatterDiagnostics::log("POWER_SAVE: waiting for ICD idle... (%lu s)\n",
                               (millis() - icdWaitStart) / 1000);
             }
             if (millis() - icdWaitStart < 30000) break;  // yield — check next loop
-            Serial.println("POWER_SAVE: ICD idle timeout — sleeping anyway");
+            MatterDiagnostics::logln("POWER_SAVE: ICD idle timeout — sleeping anyway");
         } else {
-            Serial.println("ICD idle — entering deep sleep.");
+            MatterDiagnostics::logln("ICD idle — entering deep sleep.");
         }
         icdWaitStart = 0;  // reset so next wakeup cycle starts fresh
 
@@ -606,7 +674,7 @@ void loop() {
         pinMode(I2C_SDA_PIN, INPUT);
         pinMode(I2C_SCL_PIN, INPUT);
 
-        Serial.printf("Cycle complete — active for %lu ms. Entering deep sleep for %d s…\n",
+        MatterDiagnostics::log("Cycle complete — active for %lu ms. Entering deep sleep for %d s…\n",
               millis() - gWakeStartMillis, ICD_WAKE_INTERVAL_S);
         Serial.flush();
         delay(100);  // drain UART TX buffer before power-down
