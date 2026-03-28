@@ -277,6 +277,11 @@ void loop() {
     // services have been registered in the new boot cycle.  NVS preserves fabrics,
     // the Thread dataset, CASE session resumption IDs, and subscription state.
     case State::SYSTEM_BOOT: {
+        // Release GPIO holds set before the previous deep sleep so pins are
+        // freely driveable again during this wake cycle.
+        gpio_hold_dis(static_cast<gpio_num_t>(SENSOR_PWR_PIN));
+        gpio_hold_dis(static_cast<gpio_num_t>(ACTION_BUTTON_PIN));
+
         // ADC
         analogSetAttenuation(ADC_11db);
 
@@ -605,6 +610,22 @@ void loop() {
         Wire.end();
         pinMode(I2C_SDA_PIN, INPUT);
         pinMode(I2C_SCL_PIN, INPUT);
+
+        // Reduce ADC pin leakage through external voltage dividers/sensor networks.
+        pinMode(SOIL_MOISTURE_PIN,  INPUT);
+        pinMode(BATTERY_ADC_PIN,    INPUT);
+        pinMode(CHARGE_DETECT_PIN,  INPUT);
+
+        // Hold SENSOR_PWR_PIN LOW so it doesn't float during the power-down sequence.
+        gpio_hold_en(static_cast<gpio_num_t>(SENSOR_PWR_PIN));
+
+        // Hold ACTION_BUTTON_PIN with its INPUT_PULLUP intact so the pin doesn't
+        // float after gpio isolation — preserves EXT1 wakeup reliability.
+        gpio_hold_en(static_cast<gpio_num_t>(ACTION_BUTTON_PIN));
+
+        // Isolate all GPIO pads not held above: disables output drivers and internal
+        // pull resistors, cutting leakage through any remaining external circuitry.
+        esp_sleep_config_gpio_isolate();
 
         Serial.printf("Cycle complete — active for %lu ms. Entering deep sleep for %d s…\n",
               millis() - gWakeStartMillis, ICD_WAKE_INTERVAL_S);
