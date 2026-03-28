@@ -255,6 +255,9 @@ void setup() {
     // Configure the action button before the first loop() iteration so that
     // the top-of-loop digitalRead() check never sees a floating pin.
     pinMode(ACTION_BUTTON_PIN, INPUT_PULLUP);
+    pinMode(SOIL_MOISTURE_PIN, ANALOG);
+    pinMode(BATTERY_ADC_PIN, ANALOG);
+    pinMode(CHARGE_DETECT_PIN, ANALOG);
 
     gState = State::SYSTEM_BOOT;
 }
