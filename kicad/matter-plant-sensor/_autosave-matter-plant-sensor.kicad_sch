@@ -1006,20 +1006,18 @@
 					(hide yes)
 				)
 			)
-			(symbol "SHT41_Module_0_1"
+			(symbol "SHT41_Module_1_1"
 				(rectangle
 					(start -5.08 6.35)
 					(end 5.08 -6.35)
 					(stroke
 						(width 0)
-						(type default)
+						(type solid)
 					)
 					(fill
-						(type none)
+						(type background)
 					)
 				)
-			)
-			(symbol "SHT41_Module_1_1"
 				(pin input line
 					(at -7.62 2.54 0)
 					(length 2.54)
@@ -1085,6 +1083,176 @@
 						)
 					)
 					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
+		(symbol "Sensor_Custom:TP4056_Module"
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(property "Reference" "U"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "TP4056_Module"
+				(at 8.89 -9.144 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" ""
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Datasheet" ""
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Description" ""
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(symbol "TP4056_Module_1_1"
+				(rectangle
+					(start -7.62 7.62)
+					(end 7.62 -7.62)
+					(stroke
+						(width 0)
+						(type solid)
+					)
+					(fill
+						(type background)
+					)
+				)
+				(pin power_in line
+					(at -10.16 3.81 0)
+					(length 2.54)
+					(name "BAT+"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "3"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin power_in line
+					(at -10.16 -3.81 0)
+					(length 2.54)
+					(name "BAT-"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "4"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin power_in line
+					(at 0 10.16 270)
+					(length 2.54)
+					(name "IN+"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin power_in line
+					(at 0 -10.16 90)
+					(length 2.54)
+					(name "IN-"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin power_out line
+					(at 10.16 3.81 180)
+					(length 2.54)
+					(name "OUT+"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "5"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin power_out line
+					(at 10.16 -3.81 180)
+					(length 2.54)
+					(name "OUT-"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "6"
 						(effects
 							(font
 								(size 1.27 1.27)
@@ -1606,6 +1774,88 @@
 			(project ""
 				(path "/19d6e18f-c506-4214-a7b7-d6af9c07898d"
 					(reference "U2")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Sensor_Custom:TP4056_Module")
+		(at 193.04 134.62 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "d73289cb-a3d5-4155-a436-94a38b832228")
+		(property "Reference" "U4"
+			(at 195.1833 121.92 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "TP4056_Module"
+			(at 195.1833 124.46 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 193.04 134.62 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 193.04 134.62 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" ""
+			(at 193.04 134.62 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "3"
+			(uuid "a9828894-24cf-4b2f-b930-af57e3fce3bc")
+		)
+		(pin "1"
+			(uuid "32eddd2f-9c43-4518-9e8b-ef9e1e024b2e")
+		)
+		(pin "4"
+			(uuid "9488a78e-f8f7-4ea7-a3fe-7816b17ec948")
+		)
+		(pin "2"
+			(uuid "a01de6fe-690f-4778-ad99-a58ac336a258")
+		)
+		(pin "5"
+			(uuid "61194cb3-729a-4b8d-913c-f702e2c9ba4d")
+		)
+		(pin "6"
+			(uuid "37699284-0f18-4c29-b00f-68f1ec95dbb6")
+		)
+		(instances
+			(project ""
+				(path "/19d6e18f-c506-4214-a7b7-d6af9c07898d"
+					(reference "U4")
 					(unit 1)
 				)
 			)
