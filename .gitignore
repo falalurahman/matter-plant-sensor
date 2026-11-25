@@ -18,3 +18,12 @@ fp-info-cache
 _autosave-*
 ~*.lck
 \#auto_saved_files\#
+
+# macOS
+.DS_Store
+
+# Backups written by ESP-IDF menuconfig / sdkconfig regeneration
+*.old
+
+# Machine-specific editor settings
+**/.vscode/settings.json
