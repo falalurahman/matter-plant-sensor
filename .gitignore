@@ -27,3 +27,9 @@ _autosave-*
 
 # Machine-specific editor settings
 **/.vscode/settings.json
+
+# Generated ESP-IDF config (rebuilt from sdkconfig.defaults*, which stay tracked)
+sdkconfig
+sdkconfig.*
+!sdkconfig.defaults
+!sdkconfig.defaults.*
