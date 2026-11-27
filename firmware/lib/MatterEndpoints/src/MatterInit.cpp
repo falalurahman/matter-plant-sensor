@@ -4,6 +4,7 @@
 #ifdef CONFIG_ESP_MATTER_ENABLE_DATA_MODEL
 
 #include "MatterInit.h"
+#include "MatterDeviceProvider.h"
 #include <app/server/Server.h>
 #include <app/InteractionModelEngine.h>
 #include <platform/ConnectivityManager.h>
@@ -195,6 +196,10 @@ bool MatterInit::start() {
     ot_config.port_config.task_queue_size      = 10;
     set_openthread_platform_config(&ot_config);
 #endif
+
+    // Device identity and setup codes from the MATTER_DEVICE_* build flags.
+    // Must happen before esp_matter::start(), which opens the commissioning window.
+    MatterDeviceProvider::install();
 
     esp_err_t err = esp_matter::start(eventCB);
     if (err != ESP_OK) {

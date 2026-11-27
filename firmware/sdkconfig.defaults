@@ -66,3 +66,8 @@ CONFIG_ICD_CLIENTS_SUPPORTED_PER_FABRIC=2
 
 # OpenThread spinel RX buffer
 CONFIG_OPENTHREAD_SPINEL_RX_FRAME_BUFFER_SIZE=2048
+
+# Device identity and setup codes come from lib/MatterDeviceProvider
+# (MATTER_DEVICE_* build flags in platformio.ini) instead of the SDK test values.
+CONFIG_CUSTOM_COMMISSIONABLE_DATA_PROVIDER=y
+CONFIG_CUSTOM_DEVICE_INSTANCE_INFO_PROVIDER=y

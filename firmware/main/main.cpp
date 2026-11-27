@@ -22,6 +22,7 @@
 #endif
 
 #include "MatterInit.h"
+#include "MatterDeviceProvider.h"
 #include "MatterTempSensor.h"
 #include "MatterAmbientHumidity.h"
 #include "MatterLightSensor.h"
@@ -363,8 +364,7 @@ void loop() {
             if (millis() - lastPrint >= 10000) {
                 lastPrint = millis();
                 Serial.println("Waiting for commissioning via BLE…");
-                Serial.printf("  Setup discriminator : %d\n", MATTER_DEVICE_SETUP_DISCRIMINATOR);
-                Serial.printf("  Setup passcode      : %lu\n", (unsigned long)MATTER_DEVICE_SETUP_PASSCODE);
+                MatterDeviceProvider::printPairingInfo();
             }
             break;
         }
